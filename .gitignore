@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+data/sroie/
+data/cord/
+!data/splits/
+.DS_Store

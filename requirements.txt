@@ -1,0 +1,6 @@
+# Phase 0 runs on the standard library alone. Everything below is for the
+# dataset download and the test runner.
+pytest>=8.0
+datasets>=2.19      # SROIE fetch only
+# Phase 1+ adds: scikit-learn, rapidfuzz, pandas
+# Phase 3+ adds: fastapi, uvicorn, sqlalchemy, alembic, psycopg[binary], rq, redis
