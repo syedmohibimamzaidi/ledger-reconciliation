@@ -129,3 +129,25 @@ def test_descriptor_mangling_preserves_some_signal():
         for _ in range(200)
     )
     assert hits > 100, f"only {hits}/200 descriptors kept the leading token"
+
+def test_date_parsing_covers_observed_sroie_formats():
+    from datetime import date as D
+    from ledger.data.sroie import parse_date
+    cases = {
+        "27/MAR/2018": D(2018, 3, 27), "22 MAR 18": D(2018, 3, 22),
+        "28-FEB-2018": D(2018, 2, 28), "2018/03/27": D(2018, 3, 27),
+        "20180304": D(2018, 3, 4),     "25032018": D(2018, 3, 25),
+        "23.03.18": D(2018, 3, 23),    "(06/12/2016)": D(2016, 12, 6),
+        "OCT 3, 2016": D(2016, 10, 3), "12/28/2017": D(2017, 12, 28),
+        "4/22/2018": D(2018, 4, 22),
+    }
+    for raw, want in cases.items():
+        assert parse_date(raw) == want, f"{raw!r} -> {parse_date(raw)}"
+
+
+def test_ambiguous_dates_resolve_day_first():
+    """Malaysian corpus: 05/06/2017 is 5 June, not 6 May. Day-first formats
+    are tried first so this can't flip silently."""
+    from datetime import date as D
+    from ledger.data.sroie import parse_date
+    assert parse_date("05/06/2017") == D(2017, 6, 5)

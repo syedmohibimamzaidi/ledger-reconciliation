@@ -30,22 +30,35 @@ from pathlib import Path
 from ..schema import Receipt
 
 _DATE_FORMATS = (
-    "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d %b %Y", "%d %B %Y",
-    "%Y-%m-%d", "%d/%m/%y", "%d-%m-%y", "%d %b, %Y",
+    # Day-first is the corpus norm (Malaysian receipts). Tried first, so an
+    # ambiguous date like 05/06/2017 resolves to 5 June, not 6 May.
+    "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",
+    "%d %b %Y", "%d %B %Y", "%d %b %y", "%d %b, %Y",
+    "%d/%b/%Y", "%d-%b-%Y", "%d/%b/%y", "%d-%b-%y",
+    "%b %d, %Y", "%B %d, %Y",
+    "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d",
+    # Bare 8-digit. Order-independent in practice: 20180304 fails %d%m%Y
+    # (month 18) and 25032018 fails %Y%m%d (month 20), so each only matches
+    # its true reading.
+    "%Y%m%d", "%d%m%Y",
+    # Last resort. Only reached when day-first already failed, i.e. the first
+    # component is > 12 as a month. Documented ambiguity, not a silent guess.
+    "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y",
 )
 
 
 def parse_date(s: str | None) -> date | None:
     if not s:
         return None
-    s = re.sub(r"\s+", " ", s).strip().upper()
+    s = re.sub(r"\s+", " ", str(s)).strip().upper()
+    s = s.strip("()[]{}<>.,;: ")          # OCR wrappers: '(06/12/2016)'
+    s = re.sub(r"^(DATE|DATED|TARIKH)\s*[:.]?\s*", "", s)
     for fmt in _DATE_FORMATS:
         try:
             return datetime.strptime(s, fmt).date()
         except ValueError:
             continue
     return None
-
 
 def parse_amount(s: str | None) -> float | None:
     if not s:
