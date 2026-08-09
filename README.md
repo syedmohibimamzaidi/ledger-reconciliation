@@ -3,10 +3,7 @@
 Matches uploaded receipts to bank transactions, scores its own confidence, and
 routes what it isn't sure about to a human. Built to be measured, not demoed.
 
-**Status: Phase 0 — measurement first.** No model, no API, no UI yet. This phase
-builds the evaluation harness and a rules baseline, so that every change after
-it is falsifiable. The numbers below are deliberately mediocre; they are the
-floor everything else has to beat.
+\*\*Status: Phase 0 complete. Frozen splits, corruption model, rules baseline and eval harness are in place, with a measured floor on real data. No model, API or UI yet — those are Phases 1–4.
 
 ---
 
@@ -25,54 +22,84 @@ charges, orphan receipts, orphan transactions, and same-merchant near-duplicate
 
 Every parameter lives in [`src/ledger/data/corruption.py`](src/ledger/data/corruption.py),
 is versioned, and is written into every results file. That means the honest form
-of a claim here is *"matching precision **under a stated corruption model**"* —
+of a claim here is _"matching precision **under a stated corruption model**"_ —
 not "94% matching accuracy". Anyone who thinks a parameter is unrealistic can
 change it and re-run.
 
 Extraction numbers on SROIE carry no such asterisk: real receipts, real
 annotations, published protocol.
 
-| Component | Ground truth | Externally verifiable |
-|---|---|---|
-| Header extraction | SROIE (ICDAR 2019 Task 3) | Yes |
-| Line items | CORD v2 | Yes (Phase 1b) |
-| Merchant normalisation | Derived from SROIE company field | Partially |
-| Receipt ↔ transaction matching | Synthetic under stated corruption | **No** — read above |
+| Component                      | Ground truth                      | Externally verifiable |
+| ------------------------------ | --------------------------------- | --------------------- |
+| Header extraction              | SROIE (ICDAR 2019 Task 3)         | Yes                   |
+| Line items                     | CORD v2                           | Yes (Phase 1b)        |
+| Merchant normalisation         | Derived from SROIE company field  | Partially             |
+| Receipt ↔ transaction matching | Synthetic under stated corruption | **No** — read above   |
 
 ---
 
 ## Current results
 
-Synthetic corpus, dev split, rules baseline. **These are smoke-test numbers, not
-results** — the synthetic generator uses the same templates the regex was
-written against, so extraction here is self-graded by construction. Real
-extraction numbers arrive with SROIE in Phase 1.
+SROIE dev split (150 receipts), rules baseline. Extraction is measured against
+real ICDAR 2019 annotations. Matching is measured under the corruption model
+described above — read that section before quoting the matching numbers.
 
 ```
-EXTRACTION (normalised)      P       R      F1   support
-  vendor                 0.606   0.606   0.606        94
-  date                   1.000   1.000   1.000        94
-  total                  1.000   1.000   1.000        94
+EXTRACTION                 P       R      F1   strict   support
+  vendor               0.753   0.753   0.753    0.740       150
+  date                 1.000   0.913   0.955    0.955       150
+  total                0.617   0.617   0.617    0.617       149
+  macro                                0.775    0.771
 
-MATCHING
-  blocking recall        1.000   (ceiling: 83/83 pairs reachable)
-  precision              1.000
-  recall                 0.711
-  F1                     0.831
-  wrong partner              0   (booked against the wrong charge)
-  oracle-extraction F1   0.982   (extraction error costs 0.151 F1 downstream)
+MATCHING (133 gold pairs, 192 transactions)
+  blocking recall      0.774   ceiling: 103/133 pairs reachable
+  candidates/receipt   2.57
+  precision            0.731
+  recall               0.511
+  F1                   0.602
+  wrong partner           22   receipt booked against the wrong charge
+  spurious on orphan       3
+  oracle-extraction F1 0.783   extraction error costs 0.181 F1 downstream
 ```
 
-The vendor score is the interesting one: the baseline takes the first
-substantive line, which fails on receipts whose header is wrapped in `***`.
-That's a real error class, it's in the taxonomy, and Phase 1 has to beat it.
+These are baseline numbers, not results to be proud of. They exist so that
+every change in Phase 1 has something to beat.
 
-The `oracle-extraction` row is the number worth keeping. Running the same
-matcher on perfect headers scores 0.982; on predicted headers, 0.831. **Errors
-compound across stages**, and any evaluation that feeds gold data into stage two
-is measuring a system that doesn't exist.
+### What the baseline gets wrong
 
----
+**`total` at 0.617 is the root cause of the matching ceiling.** Candidate
+generation builds its amount band from the _predicted_ total, so a wrong total
+puts the true transaction outside the band and makes it unreachable — which is
+most of why blocking recall is 0.774. Thirty gold pairs are lost before the
+scorer runs, and no amount of matcher tuning recovers them. Fixing extraction
+raises the matching ceiling for free.
+
+**22 wrong-partner errors out of 133 pairs.** A receipt booked against the
+wrong charge is a silent accounting error, unlike an unmatched receipt, which
+is merely a queue item. This is the number that motivates confidence
+thresholds and the review queue in Phase 2.
+
+**Extraction error costs 0.181 F1 downstream.** The same matcher scores 0.783
+on gold headers and 0.602 on predicted ones. Errors compound across stages, so
+any evaluation that feeds gold data into stage two is measuring a system that
+doesn't exist.
+
+### A metric that was lying
+
+The first SROIE run reported `date` F1 of **1.000** — on support of 136 out of 150. Fourteen receipts were silently excluded because the _gold annotation_
+used a date format the parser couldn't read, and the scorer skips fields where
+ground truth is unavailable. The perfect score was computed on the easy 91%.
+
+Auditing the corpus (`scripts/audit_dates.py`) found 41 unparseable annotations
+across nine formats: `27/MAR/2018`, `20180304` and `25032018` (bare 8-digit, in
+opposite orders), `(06/12/2016)` with OCR parentheses, and `12/28/2017` in
+US month-first order inside an otherwise day-first Malaysian corpus.
+
+After the fix, support rose to 150 and date F1 **fell to 0.955**. Matching F1
+fell too, from 0.654 to 0.602, because 14 harder gold pairs entered the
+evaluation. Both drops are the metric becoming honest rather than the system
+getting worse — and a score that improves when you fix a bug in the _data_
+would be a score worth distrusting.
 
 ## Quick start
 
@@ -149,7 +176,7 @@ evals/                   committed results, one JSON per run
 
 ## Roadmap
 
-- **Phase 0 — measurement** *(done)*: frozen splits, corruption model, baseline, harness
+- **Phase 0 — measurement** _(done)_: frozen splits, corruption model, baseline, harness
 - **Phase 1 — extraction**: SROIE header fields, learned model vs rules, error taxonomy; CORD line items reported separately
 - **Phase 2 — matching**: merchant normalisation as its own component, learned pair scorer, calibration curve, automation-rate/precision tradeoff
 - **Phase 3 — backend**: FastAPI + Postgres + Redis workers, idempotency by content hash, bounded retries, dead-letter, append-only audit trail
