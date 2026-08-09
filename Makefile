@@ -1,34 +1,40 @@
 .PHONY: help venv setup test eval eval-easy eval-sroie eval-test data clean
 
-# Python used to create the venv. Override: make venv PYTHON=python3.11
-PYTHON ?= python3.12
+PYTHON ?= 3.12
 VENV   := .venv
 BIN    := $(VENV)/bin
+STAMP  := $(VENV)/.deps
 
-# Strip inherited interpreter config before running anything. Editors and
-# shell integrations inject PYTHONSTARTUP/PYTHONHOME/PYTHONPATH, which break
-# venv creation and make results depend on whose terminal you're in.
+# Prefer uv when present: standalone Python builds avoid the system dylib
+# breakage that Homebrew Python is prone to on macOS.
+UV := $(shell command -v uv 2>/dev/null)
+
+# Strip inherited interpreter config so results don't depend on whose shell
+# ran them.
 ENV := env -u PYTHONSTARTUP -u PYTHONHOME -u PYTHONPATH PYTHONNOUSERSITE=1
 PY  := $(ENV) PYTHONPATH=src $(BIN)/python
 
-help:
-	@echo "venv        create .venv with $(PYTHON)"
-	@echo "setup       venv + install dependencies"
-	@echo "test        run the test suite"
-	@echo "eval        baseline on synthetic/dev (no download needed)"
-	@echo "eval-easy   zero-corruption sanity floor"
-	@echo "eval-sroie  baseline on sroie/dev (needs make data)"
-	@echo "eval-test   OPEN THE TEST SPLIT - end of phase only"
-	@echo "data        download SROIE into data/sroie"
-
 $(BIN)/python:
-	$(ENV) $(PYTHON) -m venv $(VENV)
+ifdef UV
+	$(ENV) uv venv --python $(PYTHON) $(VENV)
+else
+	$(ENV) python$(PYTHON) -m venv $(VENV)
+endif
 
 venv: $(BIN)/python
 
-setup: venv
+# Stamp file: dependencies reinstall only when requirements.txt changes,
+# instead of on every make invocation.
+$(STAMP): requirements.txt | $(BIN)/python
+ifdef UV
+	$(ENV) uv pip install --python $(BIN)/python -r requirements.txt
+else
 	$(ENV) $(BIN)/python -m pip install --upgrade pip
 	$(ENV) $(BIN)/python -m pip install -r requirements.txt
+endif
+	@touch $(STAMP)
+
+setup: $(STAMP)
 
 data: setup
 	$(PY) scripts/get_sroie.py
