@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from datasets import Image as HFImage
+
 
 OUT = Path("data/sroie")
 ENTITY_KEYS = ("company", "date", "address", "total")
@@ -42,6 +44,14 @@ def main() -> int:
     for split_name, split in ds.items():
         cols = split.column_names
         print(f"{split_name}: {len(split)} rows, columns={cols}")
+
+        # Phase 0 reads OCR text + entity annotations only. Decoding ~1000 JPEGs
+        # to get at them would need Pillow and buy nothing. Images matter again
+        # in Phase 1b if a layout-aware model goes in - re-fetch then.
+        img_cols = [c for c, f in split.features.items() if isinstance(f, HFImage)]
+        if img_cols:
+            print(f"  dropping image columns: {img_cols}")
+            split = split.remove_columns(img_cols)
 
         for i, row in enumerate(split):
             ann = pick(row, "entities", "annotation", "gt", "labels", "parse")
