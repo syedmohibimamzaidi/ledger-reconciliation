@@ -1,0 +1,240 @@
+{
+  "run": {
+    "timestamp": "2026-08-09T21:00:57+00:00",
+    "git": "6cdef86",
+    "corpus": "synthetic",
+    "split": "dev",
+    "difficulty": "easy",
+    "system": "baseline-rules"
+  },
+  "dataset": {
+    "n_receipts": 94,
+    "n_transactions": 94,
+    "n_gold_pairs": 94,
+    "orphan_receipts": 0,
+    "orphan_transactions": 0,
+    "corruption": {
+      "seed": 20260809,
+      "lag_days_weights": {
+        "0": 1.0
+      },
+      "tip_probability": 0.0,
+      "tip_pct_choices": [
+        0.1,
+        0.12,
+        0.15,
+        0.18,
+        0.2
+      ],
+      "partial_refund_probability": 0.0,
+      "partial_refund_pct_range": [
+        0.05,
+        0.35
+      ],
+      "cent_jitter_probability": 0.0,
+      "truncate_probability": 0.0,
+      "truncate_max_chars": 22,
+      "store_number_probability": 0.0,
+      "acquirer_prefix_probability": 0.0,
+      "city_suffix_probability": 0.0,
+      "vowel_strip_probability": 0.0,
+      "orphan_receipt_rate": 0.0,
+      "orphan_txn_multiplier": 0.0,
+      "duplicate_txn_rate": 0.0,
+      "confuser_rate": 0.0,
+      "confuser_amount_jitter": 0.04,
+      "confuser_date_window": 4,
+      "model_version": "0.1.0"
+    }
+  },
+  "extraction": {
+    "normalised": {
+      "vendor": {
+        "precision": 0.6064,
+        "recall": 0.6064,
+        "f1": 0.6064,
+        "tp": 57,
+        "fp": 37,
+        "fn": 37,
+        "support": 94
+      },
+      "date": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 94,
+        "fp": 0,
+        "fn": 0,
+        "support": 94
+      },
+      "total": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 94,
+        "fp": 0,
+        "fn": 0,
+        "support": 94
+      },
+      "macro_f1": 0.8688,
+      "micro_f1": 0.8688
+    },
+    "strict": {
+      "vendor": {
+        "precision": 0.6064,
+        "recall": 0.6064,
+        "f1": 0.6064,
+        "tp": 57,
+        "fp": 37,
+        "fn": 37,
+        "support": 94
+      },
+      "date": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 94,
+        "fp": 0,
+        "fn": 0,
+        "support": 94
+      },
+      "total": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "tp": 94,
+        "fp": 0,
+        "fn": 0,
+        "support": 94
+      },
+      "macro_f1": 0.8688,
+      "micro_f1": 0.8688
+    }
+  },
+  "matching": {
+    "precision": 1.0,
+    "recall": 0.8298,
+    "f1": 0.907,
+    "tp": 78,
+    "fp": 0,
+    "fn": 16,
+    "wrong_partner": 0,
+    "spurious_on_orphan": 0,
+    "automation_rate": 0.8298,
+    "blocking_recall": 1.0,
+    "recoverable_pairs": 94,
+    "gold_pairs": 94,
+    "blocking": {
+      "candidates_generated": 108,
+      "candidates_per_receipt": 1.15,
+      "pairs_before_assignment": 78,
+      "pairs_after_assignment": 78,
+      "threshold": 0.6
+    },
+    "oracle_extraction_f1": 1.0,
+    "cost_of_extraction_error_f1": 0.093
+  },
+  "calibration": {
+    "curve": [
+      {
+        "bin": "0.6-0.7",
+        "n": 17,
+        "mean_confidence": 0.6482,
+        "accuracy": 1.0
+      },
+      {
+        "bin": "0.7-0.8",
+        "n": 4,
+        "mean_confidence": 0.7177,
+        "accuracy": 1.0
+      },
+      {
+        "bin": "0.9-1.0",
+        "n": 57,
+        "mean_confidence": 1.0,
+        "accuracy": 1.0
+      }
+    ],
+    "ece": 0.0912,
+    "brier": 0.0312
+  },
+  "threshold_sweep": [
+    {
+      "threshold": 0.0,
+      "precision": 1.0,
+      "recall": 0.8298,
+      "auto_cleared": 78,
+      "sent_to_review": 0
+    },
+    {
+      "threshold": 0.1,
+      "precision": 1.0,
+      "recall": 0.8298,
+      "auto_cleared": 78,
+      "sent_to_review": 0
+    },
+    {
+      "threshold": 0.2,
+      "precision": 1.0,
+      "recall": 0.8298,
+      "auto_cleared": 78,
+      "sent_to_review": 0
+    },
+    {
+      "threshold": 0.3,
+      "precision": 1.0,
+      "recall": 0.8298,
+      "auto_cleared": 78,
+      "sent_to_review": 0
+    },
+    {
+      "threshold": 0.4,
+      "precision": 1.0,
+      "recall": 0.8298,
+      "auto_cleared": 78,
+      "sent_to_review": 0
+    },
+    {
+      "threshold": 0.5,
+      "precision": 1.0,
+      "recall": 0.8298,
+      "auto_cleared": 78,
+      "sent_to_review": 0
+    },
+    {
+      "threshold": 0.6,
+      "precision": 1.0,
+      "recall": 0.8298,
+      "auto_cleared": 78,
+      "sent_to_review": 0
+    },
+    {
+      "threshold": 0.7,
+      "precision": 1.0,
+      "recall": 0.6489,
+      "auto_cleared": 61,
+      "sent_to_review": 17
+    },
+    {
+      "threshold": 0.8,
+      "precision": 1.0,
+      "recall": 0.6064,
+      "auto_cleared": 57,
+      "sent_to_review": 21
+    },
+    {
+      "threshold": 0.9,
+      "precision": 1.0,
+      "recall": 0.6064,
+      "auto_cleared": 57,
+      "sent_to_review": 21
+    },
+    {
+      "threshold": 1.0,
+      "precision": 1.0,
+      "recall": 0.6064,
+      "auto_cleared": 57,
+      "sent_to_review": 21
+    }
+  ]
+}
