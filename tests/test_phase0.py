@@ -151,3 +151,35 @@ def test_ambiguous_dates_resolve_day_first():
     from datetime import date as D
     from ledger.data.sroie import parse_date
     assert parse_date("05/06/2017") == D(2017, 6, 5)
+
+def test_sroie_boxes_carry_real_geometry():
+    """The loader once wrote all-zero coordinates, which collapsed every
+    receipt into one row and made cue-based extraction impossible. Zeroed
+    geometry must fail loudly, not silently."""
+    import pathlib
+    box_dir = pathlib.Path("data/sroie/box")
+    if not box_dir.exists():
+        import pytest
+        pytest.skip("SROIE not downloaded")
+
+    files = sorted(box_dir.glob("*.txt"))[:20]
+    nonzero = 0
+    for f in files:
+        for line in f.read_text(errors="ignore").splitlines():
+            parts = line.split(",", 8)
+            if len(parts) == 9 and any(p.strip() not in ("0", "") for p in parts[:8]):
+                nonzero += 1
+                break
+    assert nonzero > len(files) * 0.8, "box files have no real coordinates"
+
+
+def test_row_grouping_joins_label_to_amount():
+    from ledger.data.sroie import _group_into_rows
+    segs = [
+        ("TOTAL", 10, 100, 120),
+        ("133.70", 200, 102, 121),
+        ("CASH", 10, 140, 160),
+        ("140.00", 200, 141, 161),
+    ]
+    rows = _group_into_rows(segs)
+    assert rows == ["TOTAL  133.70", "CASH  140.00"], rows

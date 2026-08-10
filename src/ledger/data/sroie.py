@@ -70,6 +70,41 @@ def parse_amount(s: str | None) -> float | None:
     except ValueError:
         return None
 
+def _group_into_rows(segments, tol_ratio: float = 0.6) -> list[str]:
+    """Join OCR segments that share a physical row.
+
+    Segments are grouped when their vertical centres fall within a fraction of
+    the median segment height, then ordered left-to-right. Tolerance is relative
+    rather than absolute because receipt scans vary in resolution.
+
+    This is the whole reason bboxes are worth keeping: it turns
+        "TOTAL"  /  "133.70"
+    into
+        "TOTAL  133.70"
+    which is what any cue-based extractor needs to work at all.
+    """
+    if not segments:
+        return []
+
+    heights = sorted(s[3] - s[2] for s in segments)
+    med_h = heights[len(heights) // 2] or 1
+    tol = med_h * tol_ratio
+
+    segments = sorted(segments, key=lambda s: ((s[2] + s[3]) / 2, s[1]))
+    rows, current = [], [segments[0]]
+    centre = (segments[0][2] + segments[0][3]) / 2
+
+    for seg in segments[1:]:
+        y = (seg[2] + seg[3]) / 2
+        if abs(y - centre) <= tol:
+            current.append(seg)
+            centre = sum((s[2] + s[3]) / 2 for s in current) / len(current)
+        else:
+            rows.append(current)
+            current, centre = [seg], y
+    rows.append(current)
+
+    return ["  ".join(s[0] for s in sorted(r, key=lambda s: s[1])) for r in rows]
 
 def load(root: str | Path = "data/sroie") -> list[Receipt]:
     root = Path(root)
@@ -89,13 +124,20 @@ def load(root: str | Path = "data/sroie") -> list[Receipt]:
         box_file = box_dir / f.name
         raw = ""
         if box_file.exists():
-            # Box files are "x1,y1,...,x8,y8,text" - keep the text column only.
-            lines = []
+            segments = []
             for line in box_file.read_text(encoding="utf-8", errors="ignore").splitlines():
                 parts = line.split(",", 8)
-                if len(parts) == 9:
-                    lines.append(parts[8].strip())
-            raw = "\n".join(lines)
+                if len(parts) != 9:
+                    continue
+                try:
+                    xs = [float(parts[i]) for i in (0, 2, 4, 6)]
+                    ys = [float(parts[i]) for i in (1, 3, 5, 7)]
+                except ValueError:
+                    continue
+                text = parts[8].strip()
+                if text:
+                    segments.append((text, min(xs), min(ys), max(ys)))
+            raw = "\n".join(_group_into_rows(segments))
 
         receipts.append(Receipt(
             receipt_id=f.stem,

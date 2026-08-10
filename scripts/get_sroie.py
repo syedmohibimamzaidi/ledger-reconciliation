@@ -28,6 +28,22 @@ def pick(row: dict, *names):
             return row[n]
     return None
 
+def to_quad(b):
+    """Normalise a bbox to 8 coordinates (4 corners, clockwise from top-left).
+
+    The corpus ships [x0, y0, x1, y1]; the box-file format the loader reads is
+    the ICDAR 8-coordinate quad. Converting here keeps the on-disk format stable
+    if a future mirror ships quads directly.
+    """
+    if b is None:
+        return None
+    b = list(b)
+    if len(b) == 8:
+        return b
+    if len(b) == 4:
+        x0, y0, x1, y1 = b
+        return [x0, y0, x1, y0, x1, y1, x0, y1]
+    return None
 
 def main() -> int:
     try:
@@ -71,15 +87,25 @@ def main() -> int:
                 json.dumps({k: ann.get(k) for k in ENTITY_KEYS}), encoding="utf-8"
             )
 
-            ocr = pick(row, "ocr", "text", "words", "box", "bbox_text")
-            if isinstance(ocr, list):
-                # Words list -> one line each; loader expects the 9th CSV column.
-                ocr = "\n".join(
-                    "0,0,0,0,0,0,0,0," + str(w if isinstance(w, str) else w.get("text", ""))
-                    for w in ocr
-                )
-            elif isinstance(ocr, str) and "," not in ocr.split("\n")[0]:
-                ocr = "\n".join("0,0,0,0,0,0,0,0," + ln for ln in ocr.splitlines())
+            # Geometry matters: on many receipts the label ("TOTAL") and its
+            # amount are separate OCR segments on the same physical row. Without
+            # coordinates there is no way to associate them, and a text-only
+            # extractor falls back to max() and grabs cash tendered.
+            words, boxes = row.get("words"), row.get("bboxes")
+            ocr = None
+            if words and boxes and len(words) == len(boxes):
+                lines = []
+                for w, b in zip(words, boxes):
+                    text = w if isinstance(w, str) else str(w.get("text", ""))
+                    quad = to_quad(b)
+                    if quad is None:
+                        continue
+                    lines.append(",".join(str(int(v)) for v in quad) + "," + text)
+                ocr = "\n".join(lines)
+            if ocr is None:
+                ocr = pick(row, "ocr", "text", "box", "bbox_text")
+                if isinstance(ocr, str) and "," not in ocr.split("\n")[0]:
+                    ocr = "\n".join("0,0,0,0,0,0,0,0," + ln for ln in ocr.splitlines())
             if ocr:
                 (OUT / "box" / f"{rid}.txt").write_text(str(ocr), encoding="utf-8")
             n += 1
