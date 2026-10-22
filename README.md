@@ -3,12 +3,14 @@
 Matches uploaded receipts to bank transactions, scores its own confidence, and
 routes what it isn't sure about to a human. Built to be measured, not demoed.
 
-**Status:** Phase 0 measurement pipeline is complete. The first backend slice
-adds PostgreSQL-backed, idempotent structured receipt ingestion and atomic creation
-audit events. No learned model, API, workers, or UI yet.
+**Status:** Phase 0 measurement pipeline is complete. Backend ingestion supports
+PostgreSQL-backed, idempotent structured receipts and account-scoped bank
+transaction CSVs, with atomic creation audit events. No learned model, API,
+workers, or UI yet.
 
-See [receipt ingestion](docs/receipt-ingestion.md) for the service contract,
-local PostgreSQL demo, migrations, and integration tests.
+See [receipt ingestion](docs/receipt-ingestion.md) and
+[bank CSV ingestion](docs/bank-ingestion.md) for service contracts, local
+PostgreSQL demos, migrations, and integration tests.
 
 ---
 
@@ -184,7 +186,7 @@ evals/                   committed results, one JSON per run
 - **Phase 0 — measurement** _(done)_: frozen splits, corruption model, baseline, harness
 - **Phase 1 — extraction**: SROIE header fields, learned model vs rules, error taxonomy; CORD line items reported separately
 - **Phase 2 — matching**: merchant normalisation as its own component, learned pair scorer, calibration curve, automation-rate/precision tradeoff
-- **Phase 3 — backend** _(started)_: Postgres structured receipt ingestion with source-identity idempotency and atomic creation audit events is implemented; API, Redis workers, bounded retries, dead-letter, and further audit workflows remain
+- **Phase 3 — backend** _(started)_: Postgres receipt and account-scoped bank CSV ingestion with source-identity idempotency and atomic creation audit events is implemented; API, Redis workers, bounded retries, dead-letter, and further audit workflows remain
 - **Phase 4 — review queue**: side-by-side review UI, reviewer decisions captured as labelled data
 - **Phase 5 — deploy**: hosted demo, architecture diagram, cost per document, failure analysis
 

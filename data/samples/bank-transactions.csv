@@ -1,0 +1,4 @@
+source_transaction_id,date,merchant,amount,currency
+demo-bank-001,2026-10-22,Blue Bottle Coffee,-12.30,CAD
+demo-bank-002,2026-10-22,Blue Bottle Coffee,-12.30,CAD
+demo-bank-003,2026-10-23,Refund,+4.50,CAD
