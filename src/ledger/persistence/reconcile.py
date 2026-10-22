@@ -9,7 +9,7 @@ from uuid import UUID
 from sqlalchemy import Engine, func, insert, select, update
 
 from ledger.baseline.match import normalize_merchant
-from .models import Account, AuditEvent, BankTransaction, Receipt, ReconciliationDecision
+from .models import Account, AuditEvent, BankTransaction, Receipt, ReconciliationDecision, ReviewAction
 
 RULES_VERSION = "conservative-v1"
 MAX_SETTLEMENT_DAYS = 4
@@ -40,25 +40,30 @@ class Outcome:
     details: dict
 
 
+def is_plausible(receipt: Record, transaction: Record) -> bool:
+    key = merchant_key(receipt.merchant)
+    return (receipt.amount > 0 and transaction.amount < 0
+            and receipt.currency == transaction.currency
+            and bool(key[1]) and key == merchant_key(transaction.merchant)
+            and 0 <= (transaction.date - receipt.date).days <= MAX_SETTLEMENT_DAYS)
+
+
 def decide(receipts: list[Record], transactions: list[Record],
-           accepted: dict[UUID, UUID] | None = None) -> dict[UUID, Outcome]:
+           accepted: dict[UUID, UUID] | None = None,
+           rejected: set[tuple[UUID, UUID]] | None = None) -> dict[UUID, Outcome]:
     """Pure rules over the full account graph, including previously matched rows.
 
     Amount is intentionally not a candidate filter. A different amount can be a
     tip, extraction error, or separate payment and must not disappear as evidence.
     """
     accepted = accepted or {}
+    rejected = rejected or set()
     used_transactions = set(accepted.values())
     candidates = {receipt.id: [] for receipt in receipts}
     competitors = {transaction.id: [] for transaction in transactions}
     for receipt in receipts:
-        key = merchant_key(receipt.merchant)
         for transaction in transactions:
-            lag = (transaction.date - receipt.date).days
-            if (receipt.amount > 0 and transaction.amount < 0
-                    and receipt.currency == transaction.currency
-                    and key[1] and key == merchant_key(transaction.merchant)
-                    and 0 <= lag <= MAX_SETTLEMENT_DAYS):
+            if (receipt.id, transaction.id) not in rejected and is_plausible(receipt, transaction):
                 candidates[receipt.id].append(transaction)
                 competitors[transaction.id].append(receipt.id)
 
@@ -67,10 +72,14 @@ def decide(receipts: list[Record], transactions: list[Record],
         if receipt.id in accepted:
             continue  # Accepted matches are final for this milestone.
         possible = sorted(candidates[receipt.id], key=lambda item: str(item.id))
+        rejected_ids = sorted(str(tid) for rid, tid in rejected if rid == receipt.id)
         reasons = []
         if not possible:
-            reasons.append("unsupported_receipt_amount" if receipt.amount <= 0 else "no_plausible_candidates")
+            reasons.append("unsupported_receipt_amount" if receipt.amount <= 0 else
+                           "all_candidates_rejected" if rejected_ids else "no_plausible_candidates")
         else:
+            if rejected_ids:
+                reasons.append("human_review_required")
             if len(possible) > 1:
                 reasons.append("multiple_transactions_for_receipt")
             if any(len(competitors[item.id]) > 1 for item in possible):
@@ -94,6 +103,8 @@ def decide(receipts: list[Record], transactions: list[Record],
                 for item in possible
             ],
         }
+        if rejected_ids:
+            details["rejected_candidate_ids"] = rejected_ids
         outcomes[receipt.id] = Outcome(
             "matched" if clear else "needs_review" if possible else "unmatched",
             possible[0].id if clear else None, details,
@@ -142,6 +153,24 @@ class ReconciliationSummary:
     decisions_written: int
 
 
+def _load_account_state(connection, account_id):
+    receipts = [Record(row.id, row.merchant, row.receipt_date, row.amount, row.currency)
+                for row in connection.execute(select(Receipt.__table__).where(
+                    Receipt.account_id == account_id).order_by(Receipt.id))]
+    transactions = [Record(row.id, row.merchant, row.transaction_date, row.amount, row.currency)
+                    for row in connection.execute(select(BankTransaction.__table__).where(
+                        BankTransaction.account_id == account_id).order_by(BankTransaction.id))]
+    previous = {row.receipt_id: row for row in connection.execute(
+        select(ReconciliationDecision.__table__).where(ReconciliationDecision.account_id == account_id))}
+    return receipts, transactions, previous
+
+
+def _load_rejections(connection, account_id):
+    return {(row.receipt_id, row.bank_transaction_id) for row in connection.execute(
+        select(ReviewAction.receipt_id, ReviewAction.bank_transaction_id).where(
+            ReviewAction.account_id == account_id, ReviewAction.action == "reject"))}
+
+
 def reconcile_account(engine: Engine, account_id: UUID) -> ReconciliationSummary:
     """Reconcile all receipts assigned to this account in one transaction.
 
@@ -156,16 +185,9 @@ def reconcile_account(engine: Engine, account_id: UUID) -> ReconciliationSummary
     with engine.begin() as connection:
         if connection.scalar(select(Account.id).where(Account.id == account_id).with_for_update()) is None:
             raise ValueError("account_id does not identify an existing account")
-        receipts = [Record(row.id, row.merchant, row.receipt_date, row.amount, row.currency)
-                    for row in connection.execute(select(Receipt.__table__).where(
-                        Receipt.account_id == account_id).order_by(Receipt.id))]
-        transactions = [Record(row.id, row.merchant, row.transaction_date, row.amount, row.currency)
-                        for row in connection.execute(select(BankTransaction.__table__).where(
-                            BankTransaction.account_id == account_id).order_by(BankTransaction.id))]
-        previous = {row.receipt_id: row for row in connection.execute(
-            select(ReconciliationDecision.__table__).where(ReconciliationDecision.account_id == account_id))}
+        receipts, transactions, previous = _load_account_state(connection, account_id)
         accepted = {rid: row.bank_transaction_id for rid, row in previous.items() if row.status == "matched"}
-        outcomes = decide(receipts, transactions, accepted)
+        outcomes = decide(receipts, transactions, accepted, _load_rejections(connection, account_id))
         written = 0
         for rid, outcome in outcomes.items():
             old = previous.get(rid)

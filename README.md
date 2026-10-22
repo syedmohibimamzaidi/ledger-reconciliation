@@ -7,12 +7,15 @@ routes what it isn't sure about to a human. Built to be measured, not demoed.
 PostgreSQL-backed, idempotent structured receipts and account-scoped bank
 transaction CSVs, with atomic creation audit events. Conservative account-scoped
 reconciliation accepts unique exact pairs and records review/unmatched outcomes.
+Human review services confirm or reject candidates with revision checks and audited,
+idempotent requests.
 No learned model, API, workers, or UI yet.
 
 See [receipt ingestion](docs/receipt-ingestion.md) and
 [bank CSV ingestion](docs/bank-ingestion.md) for service contracts, local
 PostgreSQL demos, migrations, and integration tests. See
 [safe reconciliation](docs/reconciliation.md) for scope assignment and matching rules.
+See [human review](docs/human-review.md) for candidate decisions and the local demo.
 
 ---
 

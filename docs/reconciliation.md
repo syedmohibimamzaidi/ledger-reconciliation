@@ -2,8 +2,8 @@
 
 The service reconciles stored receipt totals against debits in one explicitly
 selected account. It preserves both ingestion contracts and the independent
-extraction/evaluation pipeline. No human decision actions or match overrides are
-introduced in this milestone.
+extraction/evaluation pipeline. The later [human review services](human-review.md)
+add candidate confirmation and rejection while retaining these scope and locking rules.
 
 ## Local demonstration
 
@@ -98,6 +98,8 @@ ambiguous. No greedy tie breaking or "best score" booking is performed.
 | `transaction_already_matched` | A candidate is already accepted for another receipt |
 | `no_plausible_candidates` | No edge passes merchant/date/currency/direction rules |
 | `unsupported_receipt_amount` | Nonpositive receipt total cannot be matched |
+| `human_review_required` | A prior rejection keeps remaining candidates under human review |
+| `all_candidates_rejected` | No active candidates remain after pair-specific rejections |
 
 Review outcomes may include multiple reason codes. Their candidate details contain
 merchant/date/currency/amount snapshots, signed difference (`-bank_amount - total`),
@@ -145,7 +147,8 @@ artificially unique. Decisions reflect the committed bank records read after
 acquiring the account lock; a bank import committed after that read participates
 on the next run. There is no claim of uniqueness against future records. Audit
 snapshots retain the evidence used when accepting a match. Human correction or
-reopening of prior matches is deferred.
+reopening of prior matches is deferred. Human confirmations are also retained;
+durable rejected edges are excluded before candidate ambiguity is calculated.
 
 As with ingestion, application services honor the lock and entity/event contract.
 The constraints enforce identity and scope, not merchant rules through direct SQL,

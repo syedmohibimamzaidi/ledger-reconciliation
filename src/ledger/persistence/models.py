@@ -5,7 +5,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String,
+    Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String,
     UniqueConstraint, Uuid, func, text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -104,9 +104,58 @@ class ReconciliationDecision(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ReviewAction(Base):
+    """Immutable human request/result and durable rejected candidate edges."""
+
+    __tablename__ = "review_actions"
+    __table_args__ = (
+        UniqueConstraint("account_id", "request_id", name="uq_review_request"),
+        UniqueConstraint("receipt_id", "resulting_revision", name="uq_review_case_revision"),
+        ForeignKeyConstraint(["receipt_id", "account_id"], ["receipts.id", "receipts.account_id"],
+                             name="fk_review_receipt_scope", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["bank_transaction_id", "account_id"],
+                             ["bank_transactions.id", "bank_transactions.account_id"],
+                             name="fk_review_transaction_scope", ondelete="RESTRICT"),
+        Index("uq_review_rejected_pair", "receipt_id", "bank_transaction_id", unique=True,
+              postgresql_where=text("action = 'reject'")),
+        Index("uq_review_confirmed_receipt", "receipt_id", unique=True,
+              postgresql_where=text("action = 'confirm'")),
+        CheckConstraint("action IN ('confirm', 'reject')", name="ck_review_action"),
+        CheckConstraint("expected_revision > 0 AND resulting_revision = expected_revision + 1", name="ck_review_revision"),
+        CheckConstraint("btrim(reviewer) <> '' AND btrim(reason) <> ''", name="ck_review_identity_reason"),
+        CheckConstraint("receipt_amount > 0 AND bank_amount < 0 AND "
+                        "receipt_amount <> 'NaN'::numeric AND bank_amount <> 'NaN'::numeric", name="ck_review_amounts"),
+        CheckConstraint("action <> 'confirm' OR receipt_amount = -bank_amount OR acknowledge_amount_mismatch",
+                        name="ck_review_mismatch_acknowledged"),
+        CheckConstraint("(action = 'confirm' AND resulting_status = 'matched') OR "
+                        "(action = 'reject' AND resulting_status IN ('needs_review', 'unmatched') "
+                        "AND NOT acknowledge_amount_mismatch)", name="ck_review_result"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    request_id: Mapped[UUID] = mapped_column(Uuid)
+    account_id: Mapped[UUID] = mapped_column(Uuid)
+    receipt_id: Mapped[UUID] = mapped_column(Uuid)
+    bank_transaction_id: Mapped[UUID] = mapped_column(Uuid)
+    action: Mapped[str] = mapped_column(String(16))
+    reviewer: Mapped[str] = mapped_column(String(255))
+    reason: Mapped[str] = mapped_column(String(2000))
+    acknowledge_amount_mismatch: Mapped[bool] = mapped_column(Boolean)
+    expected_revision: Mapped[int] = mapped_column(Integer)
+    resulting_revision: Mapped[int] = mapped_column(Integer)
+    resulting_status: Mapped[str] = mapped_column(String(32))
+    receipt_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    bank_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    snapshot: Mapped[dict] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuditEvent(Base):
     __tablename__ = "audit_events"
     __table_args__ = (
+        UniqueConstraint("review_action_id", name="uq_audit_review_action"),
+        CheckConstraint("(event_type = 'receipt.reviewed') = (review_action_id IS NOT NULL)",
+                        name="ck_audit_review_action"),
         Index("uq_audit_receipt_created", "receipt_id", unique=True,
               postgresql_where=text("event_type = 'receipt.created'")),
         Index("uq_audit_transaction_created", "bank_transaction_id", unique=True,
@@ -126,6 +175,9 @@ class AuditEvent(Base):
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    review_action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("review_actions.id", name="fk_audit_review_action", ondelete="RESTRICT"),
+    )
     receipt_id: Mapped[UUID | None] = mapped_column(ForeignKey("receipts.id", ondelete="RESTRICT"), index=True)
     bank_transaction_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("bank_transactions.id", name="fk_audit_bank_transaction", ondelete="RESTRICT"), index=True,
