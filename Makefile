@@ -1,4 +1,4 @@
-.PHONY: help venv setup test eval eval-easy eval-sroie eval-test data clean
+.PHONY: help venv setup test test-postgres migrate demo-ingestion eval eval-easy eval-sroie eval-test data clean
 
 PYTHON ?= 3.12
 VENV   := .venv
@@ -41,6 +41,16 @@ data: setup
 
 test: setup
 	$(PY) -m pytest tests/ -q
+
+test-postgres: setup
+	@test -n "$$TEST_DATABASE_URL" || (echo 'Set TEST_DATABASE_URL first'; exit 1)
+	$(PY) -m pytest tests/test_ingestion.py -q
+
+migrate: setup
+	$(PY) -m alembic upgrade head
+
+demo-ingestion: setup
+	$(PY) scripts/demo_ingestion.py
 
 eval: setup
 	$(PY) -m ledger.eval.run_eval --corpus synthetic --split dev

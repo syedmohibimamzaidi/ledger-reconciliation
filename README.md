@@ -3,7 +3,12 @@
 Matches uploaded receipts to bank transactions, scores its own confidence, and
 routes what it isn't sure about to a human. Built to be measured, not demoed.
 
-\*\*Status: Phase 0 complete. Frozen splits, corruption model, rules baseline and eval harness are in place, with a measured floor on real data. No model, API or UI yet — those are Phases 1–4.
+**Status:** Phase 0 measurement pipeline is complete. The first backend slice
+adds PostgreSQL-backed, idempotent structured receipt ingestion and atomic creation
+audit events. No learned model, API, workers, or UI yet.
+
+See [receipt ingestion](docs/receipt-ingestion.md) for the service contract,
+local PostgreSQL demo, migrations, and integration tests.
 
 ---
 
@@ -105,7 +110,7 @@ would be a score worth distrusting.
 
 ```bash
 make setup
-make test          # 12 tests, none of which check whether the score is good
+make test          # pipeline + ingestion tests; database tests need TEST_DATABASE_URL
 make eval          # synthetic corpus, no download needed
 make data          # fetch SROIE (~600 receipts)
 make eval-sroie
@@ -179,7 +184,7 @@ evals/                   committed results, one JSON per run
 - **Phase 0 — measurement** _(done)_: frozen splits, corruption model, baseline, harness
 - **Phase 1 — extraction**: SROIE header fields, learned model vs rules, error taxonomy; CORD line items reported separately
 - **Phase 2 — matching**: merchant normalisation as its own component, learned pair scorer, calibration curve, automation-rate/precision tradeoff
-- **Phase 3 — backend**: FastAPI + Postgres + Redis workers, idempotency by content hash, bounded retries, dead-letter, append-only audit trail
+- **Phase 3 — backend** _(started)_: Postgres structured receipt ingestion with source-identity idempotency and atomic creation audit events is implemented; API, Redis workers, bounded retries, dead-letter, and further audit workflows remain
 - **Phase 4 — review queue**: side-by-side review UI, reviewer decisions captured as labelled data
 - **Phase 5 — deploy**: hosted demo, architecture diagram, cost per document, failure analysis
 

@@ -3,4 +3,7 @@
 pytest>=8.0
 datasets>=2.19      # SROIE fetch only
 # Phase 1+ adds: scikit-learn, rapidfuzz, pandas
-# Phase 3+ adds: fastapi, uvicorn, sqlalchemy, alembic, psycopg[binary], rq, redis
+# Structured receipt persistence (independent of the evaluation pipeline).
+SQLAlchemy>=2.0,<2.1
+alembic>=1.13,<2
+psycopg[binary]>=3.1,<4
