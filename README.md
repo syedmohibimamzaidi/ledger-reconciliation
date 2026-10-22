@@ -1,202 +1,158 @@
-# Ledger — Receipt Reconciliation Engine
+# Ledger Reconciliation
 
-Matches uploaded receipts to bank transactions, scores its own confidence, and
-routes what it isn't sure about to a human. Built to be measured, not demoed.
+A backend service for importing bank transactions and structured receipts,
+safely reconciling them, reviewing uncertain candidates, and preserving an audit
+history. The focus is correctness under duplicate submissions, concurrent
+decisions, and database failures.
 
-**Status:** Phase 0 measurement pipeline is complete. Backend ingestion supports
-PostgreSQL-backed, idempotent structured receipts and account-scoped bank
-transaction CSVs, with atomic creation audit events. Conservative account-scoped
-reconciliation accepts unique exact pairs and records review/unmatched outcomes.
-Human review services confirm or reject candidates with revision checks and audited,
-idempotent requests.
-No learned model, API, workers, or UI yet.
+**Current interface:** synchronous Python service functions and local demo scripts.
+There are no HTTP endpoints, authentication, dashboard, or background workers yet.
 
-See [receipt ingestion](docs/receipt-ingestion.md) and
-[bank CSV ingestion](docs/bank-ingestion.md) for service contracts, local
-PostgreSQL demos, migrations, and integration tests. See
-[safe reconciliation](docs/reconciliation.md) for scope assignment and matching rules.
-See [human review](docs/human-review.md) for candidate decisions and the local demo.
+## Implemented
 
----
+| Component | Behavior | Details |
+| --- | --- | --- |
+| PostgreSQL persistence | SQLAlchemy models and Alembic migrations for accounts, receipts, transactions, reconciliation decisions, review actions, and audit events | [Models](src/ledger/persistence/models.py), [migrations](migrations/versions/) |
+| Structured receipt ingestion | Validated dates, Decimal amounts, currency, and source identity; duplicate submissions return the same receipt ID | [Receipt ingestion](docs/receipt-ingestion.md) |
+| Bank CSV ingestion | Account-scoped records with signed amounts; whole-file validation, atomic imports, and inserted/skipped summaries | [CSV format and ingestion](docs/bank-ingestion.md) |
+| Safe reconciliation | Explicit account scope, exact amounts, ambiguity checks in both directions, and persisted match/review/unmatched outcomes | [Matching rules and decisions](docs/reconciliation.md) |
+| Human review | List cases, confirm candidates, or reject specific pairs; revision checks and idempotent requests protect decisions | [Review services](docs/human-review.md) |
+| Audit history | Ingestion, scope assignment, reconciliation revisions, and reviewer actions recorded with their evidence | [Transaction and audit guarantees](docs/human-review.md#revisions-idempotency-and-transactions) |
 
-## Read this before trusting any matching number
+The persistence layer uses Python 3.12, SQLAlchemy 2, PostgreSQL, and Alembic.
+Services own database transactions that commit state changes and audit events
+together. Unique constraints prevent duplicate identities and multiple accepted
+matches for either record; composite foreign keys enforce account scope.
+Account row locks serialize reconciliation and review, while expected revisions
+reject stale human decisions.
 
-No public dataset pairs receipts with the bank transactions they settled to.
-Receipt extraction can be measured against real labelled data (SROIE, ICDAR
-2019); receipt→transaction matching cannot, because the ledger side doesn't
-exist publicly.
+Duplicate protection uses stable caller-supplied identities:
 
-So the transaction ledger here is **derived from receipt ground truth and then
-degraded** by an explicit corruption model: settlement lag, tip and refund
-drift, descriptor mangling by acquirer prefixes and truncation, duplicate
-charges, orphan receipts, orphan transactions, and same-merchant near-duplicate
-"confusers".
+- Receipts: `(source, source_receipt_id)`.
+- Bank transactions: `(account_id, source_transaction_id)`.
+- Review requests: `(account_id, request_id)`.
 
-Every parameter lives in [`src/ledger/data/corruption.py`](src/ledger/data/corruption.py),
-is versioned, and is written into every results file. That means the honest form
-of a claim here is _"matching precision **under a stated corruption model**"_ —
-not "94% matching accuracy". Anyone who thinks a parameter is unrealistic can
-change it and re-run.
+Identical retries reuse the existing result without duplicate creation/action
+events. Reusing an identity with conflicting input is rejected. Distinct source
+IDs preserve distinct receipts or payments even when merchant, date, and amount
+are identical.
 
-Extraction numbers on SROIE carry no such asterisk: real receipts, real
-annotations, published protocol.
+## Run locally
 
-| Component                      | Ground truth                      | Externally verifiable |
-| ------------------------------ | --------------------------------- | --------------------- |
-| Header extraction              | SROIE (ICDAR 2019 Task 3)         | Yes                   |
-| Line items                     | CORD v2                           | Yes (Phase 1b)        |
-| Merchant normalisation         | Derived from SROIE company field  | Partially             |
-| Receipt ↔ transaction matching | Synthetic under stated corruption | **No** — read above   |
+Prerequisites: Make, Docker with Compose, and Python 3.12. `uv` is recommended;
+the Makefile uses it when available and otherwise uses `python3.12` and pip.
+Run commands from the repository root.
 
----
-
-## Current results
-
-SROIE dev split (150 receipts), rules baseline. Extraction is measured against
-real ICDAR 2019 annotations. Matching is measured under the corruption model
-described above — read that section before quoting the matching numbers.
-
-```
-EXTRACTION                 P       R      F1   strict   support
-  vendor               0.753   0.753   0.753    0.740       150
-  date                 1.000   0.913   0.955    0.955       150
-  total                0.617   0.617   0.617    0.617       149
-  macro                                0.775    0.771
-
-MATCHING (133 gold pairs, 192 transactions)
-  blocking recall      0.774   ceiling: 103/133 pairs reachable
-  candidates/receipt   2.57
-  precision            0.731
-  recall               0.511
-  F1                   0.602
-  wrong partner           22   receipt booked against the wrong charge
-  spurious on orphan       3
-  oracle-extraction F1 0.783   extraction error costs 0.181 F1 downstream
-```
-
-These are baseline numbers, not results to be proud of. They exist so that
-every change in Phase 1 has something to beat.
-
-### What the baseline gets wrong
-
-**`total` at 0.617 is the root cause of the matching ceiling.** Candidate
-generation builds its amount band from the _predicted_ total, so a wrong total
-puts the true transaction outside the band and makes it unreachable — which is
-most of why blocking recall is 0.774. Thirty gold pairs are lost before the
-scorer runs, and no amount of matcher tuning recovers them. Fixing extraction
-raises the matching ceiling for free.
-
-**22 wrong-partner errors out of 133 pairs.** A receipt booked against the
-wrong charge is a silent accounting error, unlike an unmatched receipt, which
-is merely a queue item. This is the number that motivates confidence
-thresholds and the review queue in Phase 2.
-
-**Extraction error costs 0.181 F1 downstream.** The same matcher scores 0.783
-on gold headers and 0.602 on predicted ones. Errors compound across stages, so
-any evaluation that feeds gold data into stage two is measuring a system that
-doesn't exist.
-
-### A metric that was lying
-
-The first SROIE run reported `date` F1 of **1.000** — on support of 136 out of 150. Fourteen receipts were silently excluded because the _gold annotation_
-used a date format the parser couldn't read, and the scorer skips fields where
-ground truth is unavailable. The perfect score was computed on the easy 91%.
-
-Auditing the corpus (`scripts/audit_dates.py`) found 41 unparseable annotations
-across nine formats: `27/MAR/2018`, `20180304` and `25032018` (bare 8-digit, in
-opposite orders), `(06/12/2016)` with OCR parentheses, and `12/28/2017` in
-US month-first order inside an otherwise day-first Malaysian corpus.
-
-After the fix, support rose to 150 and date F1 **fell to 0.955**. Matching F1
-fell too, from 0.654 to 0.602, because 14 harder gold pairs entered the
-evaluation. Both drops are the metric becoming honest rather than the system
-getting worse — and a score that improves when you fix a bug in the _data_
-would be a score worth distrusting.
-
-## Quick start
-
-```bash
+```sh
 make setup
-make test          # pipeline + ingestion tests; database tests need TEST_DATABASE_URL
-make eval          # synthetic corpus, no download needed
-make data          # fetch SROIE (~600 receipts)
-make eval-sroie
+docker compose up -d --wait postgres
+export DATABASE_URL='postgresql+psycopg://ledger:ledger@localhost:55432/ledger'
+make migrate
+make demo-review
 ```
 
----
+Compose runs PostgreSQL 16 on localhost port **55432**, with local development
+credentials and a named volume. `docker compose stop` stops it while retaining
+data. The commands above run service demos; they do not start an API or website.
 
-## Design decisions
+| Environment variable | Used by |
+| --- | --- |
+| `DATABASE_URL` | Alembic migrations and database demo scripts; use a `postgresql+psycopg://` connection URL |
+| `TEST_DATABASE_URL` | PostgreSQL integration tests; the user must have permission to create and drop test schemas |
 
-**Split by vendor, not by receipt.** SROIE receipts from the same company share
-a printed template, and published work notes that most test layouts also appear
-in train. A random receipt-level split therefore leaks templates and inflates
-scores. Splits are grouped by normalised vendor and hashed deterministically.
+Service functions take a SQLAlchemy engine explicitly. See the feature docs above
+for Python usage, account provisioning, and input contracts.
 
-**The split is frozen and committed.** Generated once, written to
-`data/splits/`, and loaded thereafter. If the corpus changes, the loader raises
-rather than silently re-deriving — a split that moves when the code moves isn't
-a held-out set. Test is opened at the end of a phase, once, and whatever it says
-gets committed.
+### Available demos
 
-**Extraction is scored strict and normalised.** Strict is exact string match,
-the official SROIE protocol, comparable to published numbers. Normalised folds
-case, whitespace and punctuation and parses dates and amounts as typed values —
-closer to what the matcher actually consumes. Reporting only the normalised
-score inflates; reporting only strict understates. The gap between them is
-itself a result.
+After setup and migrations, each demo can be run independently:
 
-**Null is an abstention, not an error.** Precision and recall are tracked
-separately per field, because a system that declines to guess when uncertain
-should score differently from one that guesses wrong. That distinction is the
-entire basis of the review queue, and plain accuracy erases it.
+| Command | Demonstrates |
+| --- | --- |
+| `make demo-ingestion` | Submit one receipt twice: same UUID, one receipt, one creation event |
+| `make demo-bank-ingestion` | Import the [sample CSV](data/samples/bank-transactions.csv) twice: unchanged transaction and creation-event counts |
+| `make demo-reconciliation` | A clear match, an amount mismatch, an ambiguous case, and an unmatched receipt |
+| `make demo-review` | Confirm an ambiguous candidate and reject another pair; reconciliation preserves both actions without duplicate human-action events |
 
-**Blocking recall is reported as a ceiling.** Candidate generation is scored
-before scoring quality, because no matcher can exceed the recall of the
-candidates it's given. Tuning a scorer while blocking recall is 0.90 is wasted
-work.
+Demos persist their data and reuse stable identities on subsequent runs.
 
-**Wrong-partner errors are counted separately.** Booking a receipt against the
-wrong charge is materially worse than leaving it unmatched — one is a silent
-accounting error, the other is a queue item. A single F1 number hides this.
+### Tests
 
-**Greedy assignment, for now.** One-to-one pairing is currently greedy by
-descending score. Global assignment (Hungarian) is the obvious alternative, at
-O(n³) for a likely small gain; Phase 2 measures whether it's worth it rather
-than assuming.
-
----
-
-## Layout
-
-```
-src/ledger/
-  schema.py              Receipt, Transaction, MatchPair, Dataset
-  data/
-    corruption.py        the corruption model — read this first
-    ledger_gen.py        receipts -> corrupted transactions + gold pairs
-    sroie.py             SROIE Task 3 loader
-    synthetic.py         fallback corpus so `make eval` works on a fresh clone
-    splits.py            frozen, vendor-grouped splits
-  baseline/
-    extract.py           regex header extraction
-    match.py             blocking + heuristic scoring + greedy assignment
-  eval/
-    metrics.py           field F1, matching P/R/F1, blocking recall, ECE/Brier
-    run_eval.py          `make eval`
-evals/                   committed results, one JSON per run
+```sh
+export TEST_DATABASE_URL="$DATABASE_URL"
+make test-postgres   # persistence, reconciliation, and review tests
+make test            # complete suite, including extraction/evaluation tests
 ```
 
-## Roadmap
+Integration tests apply migrations in isolated schemas and remove those schemas
+afterward. They cover persistence, duplicate imports, concurrent submissions,
+one-to-one matching, stale review revisions, rejected candidates, and rollback
+when audit writes fail. Existing application tables are not cleared.
 
-- **Phase 0 — measurement** _(done)_: frozen splits, corruption model, baseline, harness
-- **Phase 1 — extraction**: SROIE header fields, learned model vs rules, error taxonomy; CORD line items reported separately
-- **Phase 2 — matching**: merchant normalisation as its own component, learned pair scorer, calibration curve, automation-rate/precision tradeoff
-- **Phase 3 — backend** _(started)_: Postgres receipt and account-scoped bank CSV ingestion with source-identity idempotency and atomic creation audit events is implemented; API, Redis workers, bounded retries, dead-letter, and further audit workflows remain
-- **Phase 4 — review queue**: side-by-side review UI, reviewer decisions captured as labelled data
-- **Phase 5 — deploy**: hosted demo, architecture diagram, cost per document, failure analysis
+Without `TEST_DATABASE_URL`, database tests explicitly skip; `make test-postgres`
+requires it. Configured database connection failures fail the tests.
 
-## Deliberately out of scope
+## Current matching rules and limits
 
-Plaid, subscription detection, spending insights, general anomaly detection,
-expense-policy engines, multi-tenancy, real auth, LLM financial advice. Each is
-a project of its own; adding them would make this one shallower, not deeper.
+Receipts start unassigned. The caller explicitly assigns them to one account
+using `assign_receipts_to_account`; `reconcile_account` considers all receipts
+assigned to that account and its stored bank transactions. Unassigned receipts
+and records from other accounts cannot participate.
+
+Automatic acceptance requires:
+
+1. A positive receipt total and a negative bank debit, with identical currency.
+2. A transaction date 0–4 calendar days after the receipt date, inclusive.
+3. Guarded merchant equality: recognized processor prefixes and punctuation are
+   normalized, while meaningful tokens such as store numbers are preserved.
+4. Exact Decimal equality, `receipt.amount == -bank.amount`, and a unique
+   plausible pair in both directions.
+
+Amount differences remain review candidates rather than disappearing behind an
+amount filter. Ambiguous pairs are not resolved by a score or greedy assignment;
+records without plausible candidates remain unmatched. Human confirmation of an
+amount mismatch requires explicit acknowledgement and a reason, preserving both
+original amounts. Rejections exclude only the selected receipt/transaction pair
+and keep its remaining candidates under human review on reruns.
+
+Accepted matches stay fixed; undo, reopening, and account reassignment are
+deferred. Refunds, split payments, currency conversion, fuzzy merchant aliases,
+and longer settlement windows are not supported. Amounts use `NUMERIC(18,2)`;
+currency validation checks code shape rather than currency-specific minor units.
+Reviewer identity is caller-supplied. Services append audit events, but database
+administrator tamper protection is not implemented. See the
+[reconciliation](docs/reconciliation.md) and [review](docs/human-review.md) docs
+for full rules and migration limitations.
+
+## Supporting extraction and evaluation work
+
+The original pipeline remains separate from the PostgreSQL services. It includes
+rules-based header extraction from corpus-provided OCR text, a heuristic baseline
+matcher, frozen vendor-grouped dataset splits, a versioned corruption model, and
+an evaluation harness. It does not provide receipt-image ingestion for the backend.
+
+```sh
+make eval          # synthetic dev evaluation; no dataset download needed
+make data          # optional: download SROIE OCR text and annotations
+make eval-sroie    # evaluate the SROIE dev split
+```
+
+Evaluation commands write JSON results to `evals/`. Receipt-to-transaction
+evaluation uses generated bank records under the
+[corruption model](src/ledger/data/corruption.py); its scores are not evidence of
+backend matching accuracy on real bank statements. Historical outputs live in
+[evals/](evals/), with implementation in [data](src/ledger/data/),
+[baseline](src/ledger/baseline/), and [eval](src/ledger/eval/). Model training and
+receipt-image extraction are not prerequisites for the backend MVP.
+
+## Planned
+
+- **FastAPI endpoints and authentication:** expose ingestion, reconciliation,
+  review, and audit history through an authenticated service interface.
+- **Background processing:** durable jobs with bounded retries and failed-job
+  handling.
+- **Dashboard:** browse imports, reconciliation outcomes, review cases, and history.
+- **Deployment:** package and host a demonstrable backend and dashboard.
+
+These are future milestones; the current implementation is exercised through
+Python services, tests, and the local demos above.
