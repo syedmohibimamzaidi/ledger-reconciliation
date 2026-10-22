@@ -5,12 +5,14 @@ routes what it isn't sure about to a human. Built to be measured, not demoed.
 
 **Status:** Phase 0 measurement pipeline is complete. Backend ingestion supports
 PostgreSQL-backed, idempotent structured receipts and account-scoped bank
-transaction CSVs, with atomic creation audit events. No learned model, API,
-workers, or UI yet.
+transaction CSVs, with atomic creation audit events. Conservative account-scoped
+reconciliation accepts unique exact pairs and records review/unmatched outcomes.
+No learned model, API, workers, or UI yet.
 
 See [receipt ingestion](docs/receipt-ingestion.md) and
 [bank CSV ingestion](docs/bank-ingestion.md) for service contracts, local
-PostgreSQL demos, migrations, and integration tests.
+PostgreSQL demos, migrations, and integration tests. See
+[safe reconciliation](docs/reconciliation.md) for scope assignment and matching rules.
 
 ---
 
