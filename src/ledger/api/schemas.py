@@ -2,7 +2,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 import re
-from typing import Annotated, Generic, TypeVar
+from typing import Annotated, Generic, Literal, TypeVar
 from uuid import UUID
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
@@ -179,3 +179,26 @@ class ErrorDetail(BaseModel):
 
 class ErrorOut(BaseModel):
     error: ErrorDetail
+
+
+class JobSubmit(Input):
+    request_key: Text = Field(max_length=255)
+
+
+class JobFailure(BaseModel):
+    code: str
+    message: str
+
+
+class JobOut(BaseModel):
+    id: UUID
+    account_id: UUID
+    request_key: str
+    status: Literal["queued", "running", "succeeded", "failed"]
+    attempt_count: int
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    result_summary: ReconcileOut | None
+    failure_details: JobFailure | None

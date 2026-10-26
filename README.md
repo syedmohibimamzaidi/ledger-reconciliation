@@ -5,14 +5,16 @@ safely reconciling them, reviewing uncertain candidates, and preserving an audit
 history. The focus is correctness under duplicate submissions, concurrent
 decisions, and database failures.
 
-**Current interface:** an authenticated, synchronous FastAPI interface for a
-single-user demo, alongside Python services and local demo scripts. See the
+**Current interface:** an authenticated FastAPI interface for a single-user demo,
+with synchronous reconciliation and a separate Redis/RQ worker with persistent
+job status, alongside Python services and local demo scripts. See the
 [HTTP setup, endpoint contracts, and repeatable demo](docs/api.md).
 
 ## Implemented
 
 | Component | Behavior | Details |
 | --- | --- | --- |
+| Background reconciliation | Separate Redis/RQ worker, persistent PostgreSQL status, request idempotency and safe failures; best-effort delivery without recovery/retries | [Worker setup and HTTP demo](docs/background-reconciliation.md) |
 | FastAPI demo | Bearer-token authentication, validated JSON contracts, bounded collection pages, Swagger, and account-scoped history | [HTTP API](docs/api.md) |
 | PostgreSQL persistence | SQLAlchemy models and Alembic migrations for accounts, receipts, transactions, reconciliation decisions, review actions, and audit events | [Models](src/ledger/persistence/models.py), [migrations](migrations/versions/) |
 | Structured receipt ingestion | Validated dates, Decimal amounts, currency, and source identity; duplicate submissions return the same receipt ID | [Receipt ingestion](docs/receipt-ingestion.md) |
@@ -33,6 +35,7 @@ Duplicate protection uses stable caller-supplied identities:
 - Receipts: `(source, source_receipt_id)`.
 - Bank transactions: `(account_id, source_transaction_id)`.
 - Review requests: `(account_id, request_id)`.
+- Background reconciliation jobs: globally unique `request_key` with normalized account/operation payload.
 
 Identical retries reuse the existing result without duplicate creation/action
 events. Reusing an identity with conflicting input is rejected. Distinct source
@@ -64,6 +67,9 @@ configure the demo token and identity and run `make api` as described in the
 | `DATABASE_URL` | Alembic migrations and database demo scripts; use a `postgresql+psycopg://` connection URL |
 | `LEDGER_DEMO_TOKEN` | Required bearer secret for all API business routes; generate locally, never commit |
 | `LEDGER_DEMO_IDENTITY` | Required single demo reviewer identity derived by the API from authentication |
+| `REDIS_URL` | API job dispatch and separate RQ worker; see [background setup](docs/background-reconciliation.md) |
+| `LEDGER_QUEUE_NAME` | Optional shared worker/API queue name (`ledger-reconciliation` by default) |
+| `TEST_REDIS_URL` | Redis integration tests; use a local test instance |
 | `TEST_DATABASE_URL` | PostgreSQL integration tests; the user must have permission to create and drop test schemas |
 
 Service functions take a SQLAlchemy engine explicitly. See the feature docs above
@@ -78,6 +84,7 @@ After setup and migrations, each demo can be run independently:
 | `make demo-ingestion` | Submit one receipt twice: same UUID, one receipt, one creation event |
 | `make demo-bank-ingestion` | Import the [sample CSV](data/samples/bank-transactions.csv) twice: unchanged transaction and creation-event counts |
 | `make demo-reconciliation` | A clear match, an amount mismatch, an ambiguous case, and an unmatched receipt |
+| `make demo-jobs` | HTTP submit → job ID → poll → succeed; requires the API and separate `make worker`, see [setup](docs/background-reconciliation.md) |
 | `make demo-api` | HTTP ingest → reconcile → review → audit history against a running API; see [setup](docs/api.md) |
 | `make demo-review` | Confirm an ambiguous candidate and reject another pair; reconciliation preserves both actions without duplicate human-action events |
 
@@ -88,6 +95,8 @@ Demos persist their data and reuse stable identities on subsequent runs.
 ```sh
 export TEST_DATABASE_URL="$DATABASE_URL"
 make test-postgres   # persistence, reconciliation, review, and PostgreSQL API tests
+export TEST_REDIS_URL='redis://localhost:56379/0'  # start Compose Redis first
+make test-jobs       # PostgreSQL + Redis + separate worker integration tests
 make test            # complete suite, including extraction/evaluation tests
 ```
 
@@ -157,8 +166,9 @@ receipt-image extraction are not prerequisites for the backend MVP.
 
 ## Planned
 
-- **Background processing:** durable jobs with bounded retries and failed-job
-  handling.
+- **Background processing recovery:** automatic retries, reliable dispatch recovery,
+  and interrupted-worker recovery. Current worker execution and persistent status
+  use [best-effort delivery](docs/background-reconciliation.md#temporary-failure-limitations).
 - **Dashboard:** browse imports, reconciliation outcomes, review cases, and history.
 - **Deployment:** package and host a demonstrable backend and dashboard.
 

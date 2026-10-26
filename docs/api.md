@@ -1,7 +1,8 @@
 # Single-user demo API
 
-The synchronous FastAPI interface reuses the existing PostgreSQL services. No
-registration, user store, account ownership, multi-user authorization, jobs, UI,
+The FastAPI interface reuses the existing PostgreSQL services, with optional
+[background reconciliation jobs](background-reconciliation.md). No registration,
+user store, account ownership, multi-user authorization, UI,
 or deployment is provided. Anyone holding the one configured token can read and
 mutate **all** accounts and receipts. Account scope enforces reconciliation
 membership; it is not an authorization boundary.
@@ -58,6 +59,8 @@ All paths are relative to `http://127.0.0.1:8000`. Business requests require
 | `POST /accounts/{account_id}/transactions/import` | `{ "csv_text": "source_transaction_id,date,merchant,amount,currency\n..." }` (up to 2,000,000 characters) → `inserted`, `skipped`; whole-file validation and atomic import |
 | `GET /accounts/{account_id}/transactions` | Stored transaction page |
 | `POST /accounts/{account_id}/reconciliation` | No body; synchronously reconciles the full account → `matched`, `needs_review`, `unmatched`, `unmatched_transactions`, `decisions_written` |
+| `POST /accounts/{account_id}/reconciliation-jobs` | `{ "request_key": "stable-key" }` → 202 with job ID/status and Location; [worker setup, idempotency and limitations](background-reconciliation.md) |
+| `GET /accounts/{account_id}/reconciliation-jobs/{job_id}` | Persisted job status, attempt count, timestamps, result summary and safe failure details |
 | `GET /accounts/{account_id}/outcomes` | Current persisted decision page with revisions and evidence; no run history or refresh |
 | `GET /accounts/{account_id}/review-cases` | Persisted needs-review snapshots with revisions, active candidates, and rejection history |
 | `POST /accounts/{account_id}/review-cases/{receipt_id}/confirm` | Review body below; optionally `acknowledge_amount_mismatch` (strict boolean, default false) |
@@ -108,6 +111,7 @@ Errors use `{ "error": { "code": "...", "message": "...", "details": null } }`:
 | 422 | `invalid_input` | Schema/service validation or ineligible candidate; details contain field locations or CSV row errors |
 | 409 | `identity_conflict` | Conflicting receipt, transaction, or review request identity |
 | 409 | `stale_revision` | Details contain `expected_revision` and `actual_revision`; reload the case |
+| 503 | `jobs_unavailable` | New background submission without Redis configuration; synchronous routes remain available |
 | 409 | `state_conflict` | Already assigned elsewhere, rejected/accepted candidate, or another incompatible current state |
 
 ## Authentication and transaction boundaries

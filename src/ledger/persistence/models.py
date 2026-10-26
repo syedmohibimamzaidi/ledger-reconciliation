@@ -185,3 +185,38 @@ class AuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(100))
     payload: Mapped[dict] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReconciliationJob(Base):
+    """Durable status; Redis delivery and service commits are separate operations."""
+
+    __tablename__ = "reconciliation_jobs"
+    __table_args__ = (
+        UniqueConstraint("request_key", name="uq_reconciliation_job_request"),
+        CheckConstraint("btrim(request_key) <> ''", name="ck_reconciliation_job_key"),
+        CheckConstraint("attempt_count BETWEEN 0 AND 1", name="ck_reconciliation_job_attempts"),
+        CheckConstraint(
+            "(status = 'queued' AND attempt_count = 0 AND started_at IS NULL AND finished_at IS NULL "
+            "AND result_summary IS NULL AND failure_details IS NULL) OR "
+            "(status = 'running' AND attempt_count = 1 AND started_at IS NOT NULL AND finished_at IS NULL "
+            "AND result_summary IS NULL AND failure_details IS NULL) OR "
+            "(status = 'succeeded' AND attempt_count = 1 AND started_at IS NOT NULL AND finished_at IS NOT NULL "
+            "AND result_summary IS NOT NULL AND failure_details IS NULL) OR "
+            "(status = 'failed' AND finished_at IS NOT NULL AND result_summary IS NULL AND failure_details IS NOT NULL "
+            "AND ((attempt_count = 0 AND started_at IS NULL) OR (attempt_count = 1 AND started_at IS NOT NULL)))",
+            name="ck_reconciliation_job_state",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    account_id: Mapped[UUID] = mapped_column(ForeignKey("accounts.id", ondelete="RESTRICT"), index=True)
+    request_key: Mapped[str] = mapped_column(String(255))
+    request_payload: Mapped[dict] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(16), server_default="queued")
+    attempt_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_summary: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    failure_details: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))

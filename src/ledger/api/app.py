@@ -5,12 +5,14 @@ import os
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, Query
+from fastapi import APIRouter, Depends, FastAPI, Query, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import Engine, create_engine
 
+from ledger.jobs.queue import configured_queue
+from ledger.jobs.service import QueueUnavailable, get_job, submit_job
 from ledger.persistence.bank_ingest import CSVValidationError, import_bank_transactions
 from ledger.persistence.ingest import IdentityConflict, StructuredReceipt, ingest_receipt
 from ledger.persistence.models import Account, BankTransaction, Receipt, ReconciliationDecision
@@ -29,7 +31,7 @@ class APIError(Exception):
         self.status, self.code, self.message, self.details = status, code, message, details
 
 
-def create_app(*, engine: Engine | None = None) -> FastAPI:
+def create_app(*, engine: Engine | None = None, job_queue=None) -> FastAPI:
     """Read configuration once. Injected engines remain owned by the caller."""
     token = os.environ.get("LEDGER_DEMO_TOKEN", "")
     identity = os.environ.get("LEDGER_DEMO_IDENTITY", "").strip()
@@ -46,6 +48,9 @@ def create_app(*, engine: Engine | None = None) -> FastAPI:
     if engine.dialect.name != "postgresql":
         raise RuntimeError("The API requires PostgreSQL")
     store = Store(engine)
+    owns_queue = job_queue is None
+    if job_queue is None and os.environ.get("REDIS_URL"):
+        job_queue = configured_queue()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -54,6 +59,8 @@ def create_app(*, engine: Engine | None = None) -> FastAPI:
         finally:
             if owned:
                 engine.dispose()
+            if owns_queue and job_queue is not None:
+                job_queue.connection.close()
 
     app = FastAPI(title="Ledger single-user demo", version="0.1.0", lifespan=lifespan)
 
@@ -96,7 +103,7 @@ def create_app(*, engine: Engine | None = None) -> FastAPI:
         return await api_error(request, APIError(status, code, str(error), details))
 
     router = APIRouter(dependencies=[Depends(authenticate)], responses={
-        status: {"model": s.ErrorOut} for status in (401, 404, 409, 422)})
+        status: {"model": s.ErrorOut} for status in (401, 404, 409, 422, 503)})
 
     def page(items, limit, offset):
         return {"items": items, "limit": limit, "offset": offset}
@@ -165,6 +172,24 @@ def create_app(*, engine: Engine | None = None) -> FastAPI:
     def audit(account_id: UUID, limit: Limit = 50, offset: Offset = 0):
         store.account(account_id)
         return page(store.audit(account_id, limit, offset), limit, offset)
+
+    @router.post("/accounts/{account_id}/reconciliation-jobs", response_model=s.JobOut, status_code=202)
+    def submit_reconciliation(account_id: UUID, body: s.JobSubmit, response: Response):
+        store.account(account_id)
+        try:
+            job = submit_job(engine, job_queue, account_id, body.request_key)
+        except QueueUnavailable as error:
+            raise APIError(503, "jobs_unavailable", str(error)) from error
+        response.headers["Location"] = f"/accounts/{account_id}/reconciliation-jobs/{job['id']}"
+        return job
+
+    @router.get("/accounts/{account_id}/reconciliation-jobs/{job_id}", response_model=s.JobOut)
+    def reconciliation_job(account_id: UUID, job_id: UUID):
+        store.account(account_id)
+        job = get_job(engine, job_id, account_id)
+        if job is None:
+            raise MissingRecord("reconciliation job not found in the selected scope")
+        return job
 
     app.include_router(router)
     return app
