@@ -1,18 +1,27 @@
-# Background reconciliation: worker execution and persistent status
+# Background reconciliation: retries and recovery
 
-This milestone adds a separate RQ worker and PostgreSQL job records. The existing
-synchronous reconciliation endpoint, imports, review services and matching rules
-remain compatible. This is still the single-user demo: its bearer token grants
-access to all accounts. Job account scope enforces data membership, not user
-ownership. See [authentication](api.md#authentication-and-transaction-boundaries).
+PostgreSQL owns job identity, dispatch intent, attempt count, retry timing and
+completion. Redis/RQ transports job UUIDs to a separate worker. A small separate
+dispatcher scans durable job rows, resends due queued work and recovers expired
+worker attempts. Run both the worker and dispatcher for recovery to make progress.
 
-**Delivery is best effort.** Automatic retries, reliable dispatch recovery and
-interrupted-worker recovery are deferred. Persistent status is not a guarantee
-that a queued job will run or that a running job will receive a terminal status.
+Delivery is **at least once while recovery processes and backends are available**,
+with bounded execution attempts and terminal failure reporting. Redis messages can
+be duplicated or lost and reconstructed from PostgreSQL. This is **not exactly-once
+execution**. No automatic recovery can progress while PostgreSQL is unavailable,
+or while all dispatcher/worker processes are stopped.
 
-## Local setup and repeatable HTTP demo
+The synchronous reconciliation endpoint, imports, review services, request-key
+contracts and matching rules remain compatible. This is still the single-user
+demo: its bearer token grants access to all accounts, without multi-user ownership.
+Background imports, cancellation, manual retries, dashboard and deployment remain
+deferred.
 
-Run from the repository root:
+## Setup and demos
+
+Stop old worker/API processes before applying migration `0006_job_recovery`; old
+workers do not understand attempt fencing and must not run against the new state.
+Then, from the repository root:
 
 ```sh
 make setup
@@ -25,154 +34,173 @@ export LEDGER_DEMO_IDENTITY='local-demo-reviewer'
 make api
 ```
 
-In a second terminal, export the same `DATABASE_URL` and `REDIS_URL`, then:
+Keep the API terminal open. In two additional terminals, export the same
+`DATABASE_URL` and `REDIS_URL`, and run one command per terminal:
 
 ```sh
 make worker
+make dispatcher
 ```
 
-The worker is a separate Python process; the API never executes submitted jobs
-in an in-process background task. The demo uses RQ's `SimpleWorker` to avoid
-forking on macOS. It executes one task at a time, without periodic in-task
-heartbeats. The queue uses JSON serialization on both sides and a 300-second
-task timeout. No retry policy or scheduler is enabled. This is a local demo
-worker configuration, not a production supervisor.
+In another terminal, export the same bearer token and run `make demo-jobs` for
+HTTP submit → job ID → poll → succeed. It reuses sample records on sequential
+reruns and uses a new key for each intended run. Unchanged reruns write no new
+decisions. `LEDGER_API_URL` defaults to `http://127.0.0.1:8000`.
 
-In a third terminal, export the same API token as `LEDGER_DEMO_TOKEN`, then:
+For a controlled temporary-failure demonstration, only PostgreSQL and Redis need
+to be running; no pre-existing API/worker/dispatcher is required:
 
 ```sh
-make demo-jobs
+# DATABASE_URL must permit creating and dropping a private demo schema.
+make demo-job-recovery
 ```
 
-The script uses HTTP only: it creates/reuses its named demo account, submits and
-assigns a structured receipt, imports the sample CSV, submits a reconciliation
-job, prints the HTTP 202 job ID, replays the same request to verify its identity,
-and polls until success. Typical output:
-
-```text
-HTTP 202: job_id=<UUID>
-Status: queued
-Status: succeeded
-Result: {'matched': 0, 'needs_review': 1, 'unmatched': 0, 'unmatched_transactions': 3, 'decisions_written': 1}
-```
-
-Fast jobs may finish before the first poll, so intermediate states may not appear.
-The sample contains two plausible payments: successful job execution correctly
-produces a review case rather than an automatic match. Sequential reruns reuse
-ingested records and submit a fresh request key for each intended run; unchanged
-outcomes then produce zero decision writes. The script stops after 30 seconds if
-no worker completes it. `LEDGER_API_URL` defaults to `http://127.0.0.1:8000`.
+This script creates an isolated schema and queue, starts private API/worker/
+dispatcher processes, and installs a private SQL trigger that raises SQLSTATE
+`40001` once. It prints attempt 1's safe error and persisted retry time, waits for
+the real backoff, and observes attempt 2 succeed. It verifies one reconciliation
+decision and one reconciliation audit event, deliberately redelivers the completed
+job, and checks that neither changed. Processes, schema and queue are cleaned up.
+Failure injection exists only in this script and tests, never in public requests
+or production worker configuration.
 
 | Configuration | Purpose |
 | --- | --- |
-| `DATABASE_URL` | Required by API/worker; both must target the same migrated PostgreSQL database/schema |
-| `REDIS_URL` | Redis connection URL used by API and worker; Compose exposes Redis 7 at localhost **56379** |
-| `LEDGER_QUEUE_NAME` | Optional shared queue name; defaults to `ledger-reconciliation` |
-| `LEDGER_DEMO_TOKEN`, `LEDGER_DEMO_IDENTITY` | Existing API authentication; the worker does not need the bearer secret |
+| `DATABASE_URL` | API, worker and dispatcher must share the same migrated database/schema |
+| `REDIS_URL` | Shared Redis connection; Compose Redis 7 binds to localhost **56379** |
+| `LEDGER_QUEUE_NAME` | Shared queue name, default `ledger-reconciliation` |
+| `LEDGER_DEMO_TOKEN`, `LEDGER_DEMO_IDENTITY` | API authentication; worker/dispatcher do not need the bearer secret |
 | `TEST_DATABASE_URL`, `TEST_REDIS_URL` | Explicit integration-test backends |
 
-Keep connection URLs and bearer secrets in the environment. The Redis service
-binds locally and has no persistent volume; queue contents may be lost when its
-container is recreated. PostgreSQL job status survives independently.
+The demo RQ `SimpleWorker` runs one job at a time in a separate Python process,
+with JSON serialization and a 300-second task timeout. RQ retries and its
+scheduler are not enabled: PostgreSQL schedules all retries. The dispatcher
+sweeps once per second, processes at most 100 rows per sweep, and supports
+`python -m ledger.jobs.dispatcher --once` for a bounded sweep. Multiple
+dispatchers can run concurrently using `FOR UPDATE SKIP LOCKED`.
 
-## HTTP contracts
+## Existing HTTP contracts and additional status fields
 
-Both endpoints require the existing bearer authentication and appear in Swagger
-at `/docs` and OpenAPI at `/openapi.json`.
+Both endpoints retain bearer authentication and Swagger/OpenAPI declarations:
 
-| Method and path | Contract |
+| Endpoint | Contract |
 | --- | --- |
-| `POST /accounts/{account_id}/reconciliation-jobs` | JSON `{ "request_key": "caller-stable-key" }`; returns **202** with the persisted job and a `Location` status URL |
-| `GET /accounts/{account_id}/reconciliation-jobs/{job_id}` | Returns **200** with the current PostgreSQL job record, or **404** for a missing account/job or a job from another account |
+| `POST /accounts/{account_id}/reconciliation-jobs` | `{ "request_key": "caller-stable-key" }` → **202** with job record and `Location` status URL |
+| `GET /accounts/{account_id}/reconciliation-jobs/{job_id}` | **200** with PostgreSQL status, or **404** for missing/wrong-account records |
 
-The record includes `id`, `account_id`, `request_key`, `status`, `attempt_count`,
-`created_at`, `updated_at`, nullable `started_at`/`finished_at`, nullable
-`result_summary`, and nullable `failure_details`. Success summary fields match
-the synchronous response: `matched`, `needs_review`, `unmatched`,
-`unmatched_transactions`, `decisions_written`. It describes that worker run;
-current outcomes remain available through the existing outcomes endpoint.
+Keys remain globally unique, trimmed, nonblank, NUL-free strings of at most 255
+characters. The canonical payload contains account UUID, operation and version.
+Identical replays return the same job's current status, including terminal jobs;
+conflicting account reuse returns **409** `identity_conflict`. A replay does not
+reset retry budgets, schedules or terminal outcomes. Unknown fields return **422**.
+New jobs without Redis configuration still return **503** without retaining a
+row; existing-key replay, reads and synchronous routes work without Redis.
+Configured Redis outages now retain the accepted job as queued for recovery.
 
-Request keys are nonblank, trimmed, NUL-free strings of at most 255 characters.
-They are globally unique for reconciliation submissions in this demo. The stored
-normalized payload consists of operation/version and the path's account UUID;
-there are no job options or caller-supplied account/identity overrides. Identical
-key and payload replay returns the same job ID and its current status with 202,
-including terminal jobs. Reusing a key with a different account returns **409**
-`identity_conflict`. Unknown body fields and invalid IDs/keys return **422**.
-Replaying a key neither dispatches again nor reruns reconciliation over newer
-data. Use a new key for a new intended reconciliation run.
+Existing fields remain: `id`, `account_id`, `request_key`, `status`, `attempt_count`,
+`created_at`, `updated_at`, `started_at`, `finished_at`, `result_summary`, and
+`failure_details`. Added fields are:
 
-If `REDIS_URL` is absent, new submissions return **503** `jobs_unavailable`
-without retaining a new row. Existing-key replay, status reads, and synchronous
-endpoints remain available without Redis configuration. If dispatch raises an
-error after a job is committed, submission still returns **202** with the job ID;
-its status normally becomes `failed` with `dispatch_failed`. Always inspect/poll
-the status. A concurrently claimed job retains its actual running/terminal state.
+- `max_attempts`: persisted execution budget, currently three total attempts.
+- `next_attempt_at`: earliest allowed claim time; null during running/terminal
+  states. Retries keep the existing `queued` status instead of adding a new enum.
+- `dispatch_after`: next eligible dispatch/resend time; null outside queued state.
+- `lease_expires_at`: deadline for recovering an unlocked running attempt.
+- `failure_details.retryable`: whether that diagnostic schedules further work.
 
-## Execution and transaction boundaries
+`started_at` refers to the latest claimed attempt; `finished_at` is set only at a
+terminal outcome. Failure details are fixed safe messages/codes, retained during
+queued/running recovery and cleared on success. Internal attempt UUID tokens are
+not exposed. Success summary fields remain identical to synchronous reconciliation:
+`matched`, `needs_review`, `unmatched`, `unmatched_transactions`, `decisions_written`.
 
-1. The API commits a `queued` job and its unique request identity in PostgreSQL.
-   A concurrent identical submission reuses the row. Only the insert winner
-   attempts to enqueue the UUID in Redis through RQ.
-2. The separate worker receives only that job UUID. An atomic PostgreSQL update
-   changes `queued` to `running`, increments the attempt count to one and records
-   the start time. Unknown IDs and already running/terminal jobs are skipped.
-   The account UUID is read from PostgreSQL, never from the queue payload.
-3. The worker calls the existing `reconcile_account` service with its own engine.
-   The service retains its complete READ COMMITTED transaction, account lock,
-   human acceptance/rejection logic, decision revisions, and atomic audit writes.
-4. The worker commits `succeeded` and the summary, or `failed` and fixed safe
-   failure details. Service exceptions are not stored or returned as raw SQL,
-   connection strings, stack traces, or merchant/receipt content.
+## Retry policy and failure classification
 
-States are `queued` → `running` → `succeeded`/`failed`; a dispatch failure can move
-`queued` directly to `failed`. Attempt count is zero until a worker claims the
-job, then one. There are no automatic or manual job retries yet. Both terminal
-states are protected from reprocessing, even if duplicate queue messages arrive.
-Jobs with different keys for the same account still serialize through the existing
-account lock. Imports and human review retain their existing behavior.
+A claimed execution consumes one of three attempts. Transient execution failures
+retry after **5 seconds**, then **10 seconds**. Backoff calculation is exponential
+with a 60-second cap. Early duplicate delivery cannot bypass `next_attempt_at`.
+After the third transient failure/interruption, status becomes `failed` with
+`retry_exhausted`; no further automatic work is scheduled.
 
-PostgreSQL is authoritative for public status; RQ is only transport/execution.
-A handled service failure is recorded in PostgreSQL and returns normally from the
-RQ task, so RQ's own finished registry is not a business success indicator. Redis
-result metadata can expire immediately; PostgreSQL job records remain. Migration
-`0005_reconciliation_jobs` refuses downgrade once jobs exist, to avoid silently
-discarding pending work or durable execution records.
+Transient cases are an explicit allowlist: database connection loss, pool timeout,
+serialization failure (`40001`), deadlock (`40P01`), lock timeout (`55P03`), query
+cancellation/timeout (`57014`), capacity/startup/shutdown errors, and RQ task timeout.
+Validation, integrity constraints, unexpected errors and other database SQLSTATEs
+are permanent and stop immediately with `reconciliation_failed`. Raw SQL,
+credentials, input data and exception text are never included in status details.
 
-## Temporary failure limitations
+Transient Redis connection/timeout failures leave durable queued work with
+`dispatch_failed`; the dispatcher checks it again after 30 seconds. Dispatch and
+lost-message recovery do **not** consume execution attempts: they continue while
+infrastructure is unavailable and no worker has claimed the job. Authentication,
+authorization, serialization and other non-transient dispatch errors stop with a
+terminal safe `dispatch_failed` diagnostic. Terminal jobs require a new intended
+request key for another run; there is no manual retry endpoint.
 
-- PostgreSQL insertion and Redis enqueue are separate commits. A process crash
-  between them can leave a permanently `queued` job. There is no transactional
-  outbox, dispatch sweep, or replay-driven redispatch.
-- Redis disconnects can make enqueue results ambiguous. An unclaimed job is
-  marked `failed` when possible; a delivered copy then skips that terminal row.
-  A worker that already claimed it can still finish. Redis message loss after a
-  successful enqueue can leave `queued` indefinitely.
-- A worker crash, kill, timeout, or database outage can prevent status updates.
-  Such a job may remain `running` (or `queued` if claiming failed). There are no
-  leases, application heartbeats, abandoned-job sweeps, or worker recovery.
-- The reconciliation transaction commits separately from the final status write.
-  A crash after reconciliation commits can leave `running` even though decisions
-  and audit events were committed. There is no atomic run-completion guarantee.
-- Replaying the original request returns its existing status without recovery.
-  A new key requests a separate run against then-current account data. This is
-  not reliable delivery, exactly-once execution, or an operator recovery protocol.
+## Dispatch and transaction boundaries
 
-## Checks
+1. **Acceptance:** the API commits the job and its dispatch timing together in one
+   PostgreSQL transaction. The job row itself is the small durable outbox; no
+   separate queue-state database or cross-system transaction is required.
+2. **Dispatch:** the API optionally sends immediately. The dispatcher also selects
+   due queued rows with `SKIP LOCKED`, enqueues a job UUID using a fresh RQ transport
+   ID, and advances the resend deadline in a short row-locking transaction. If the
+   process dies before/after enqueue or loses its acknowledgement, the durable row
+   remains eligible for redelivery. Successfully enqueued work is resent every
+   30 seconds until claimed, covering Redis restarts/message loss too.
+3. **Claim:** a worker locks a due queued row, increments its attempt count, assigns
+   a fresh attempt UUID, records a **360-second lease**, and commits `running`.
+   Duplicate delivery cannot claim running, exhausted or terminal work.
+4. **Execution and completion:** a second transaction locks the running job row
+   and validates its attempt UUID and initial lease before any domain writes.
+   The existing reconciliation core uses that same connection and account lock.
+   Decisions, audit events, summary and `succeeded` status commit **together**.
+   Synchronous callers still use the original engine-owned transaction wrapper.
+5. **Failure:** the entire execution transaction rolls back. A separate fenced
+   update schedules a retry or records terminal failure. If this update cannot
+   commit, the durable running lease is later recovered by the dispatcher.
+
+The worker sets a 300-second statement timeout during reconciliation. A running
+transaction holds the job row lock throughout domain execution, so recovery skips
+it even when its lease has expired. Once a killed/disconnected worker's database
+transaction ends, the dispatcher can reclaim the expired lease. Every recovery or
+completion checks the attempt UUID; a paused old attempt cannot execute after a
+new claim or overwrite its result. PostgreSQL also resolves ambiguous commits:
+either domain writes and success both committed, or neither did.
+
+Expiry schedules the same bounded backoff with `worker_interrupted`, consuming
+the already-claimed attempt. There is no heartbeat thread: row locking protects
+active execution; the lease covers the committed-claim/execution gap. Recovery may
+wait for PostgreSQL to detect disconnected sessions or release an active database
+transaction. It never forcibly steals a live transaction.
+
+Different job keys for the same account serialize through the existing account
+lock. Accepted human matches and rejected candidate edges are preserved. The
+reconciliation service's unchanged-state checks, revisions, unique constraints and
+atomic audit writes make repeated execution safe without claiming exactly-once
+invocation. A duplicate message unable to acquire a locked row can be skipped;
+the queued row remains available to a later dispatch sweep.
+
+PostgreSQL is authoritative; RQ's finished/failed registries are not public job
+status. Migration `0006_job_recovery` makes old queued jobs dispatchable, reopens
+old zero-attempt dispatch failures, and makes old running leases immediately
+recoverable. It preserves old successes and permanent failures. Downgrade with
+stored jobs is refused to avoid discarding recovery state.
+
+## Verification
 
 ```sh
 export TEST_DATABASE_URL="$DATABASE_URL"
 export TEST_REDIS_URL="$REDIS_URL"
-make test-jobs       # requires both configured services
-make test-postgres  # existing PostgreSQL API/service coverage
-make test           # full suite, including jobs when both URLs are configured
+make test-jobs
+make test
 ```
 
-Job integration tests use migrated disposable PostgreSQL schemas, uniquely named
-Redis queues, and separate worker subprocesses. They cover authentication,
-submission/status, concurrent and conflicting identities, visible running state,
-success, duplicate claims/delivery, human-decision preservation, account isolation,
-audit rollback, safe service failure, dispatch failure, and operation without
-Redis configuration. They do not flush the Redis database. Missing test URLs
-explicitly skip the relevant integration tests; configured connection failures
-fail. No tests claim delivery or interrupted-worker recovery.
+Tests use migrated disposable PostgreSQL schemas, unique Redis queues and real
+worker subprocesses. SQL triggers/sequences inject deterministic failures that
+survive transaction rollback; no public failure controls are added. Coverage
+includes transient recovery, permanent failure, exhaustion/backoff, commit/enqueue
+gaps, ambiguous sends, Redis message loss, killed workers, locked-transaction
+protection, duplicate delivery, stale attempts, completion-write rollback, migration
+of existing jobs, authentication and human decisions. Missing test backends skip;
+configured connection failures fail. Redis databases are never flushed.

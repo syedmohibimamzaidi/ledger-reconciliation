@@ -71,7 +71,7 @@ def start_worker(db_engine, queue):
         schema = connection.scalar(text("SELECT current_schema()"))
     env = dict(os.environ, DATABASE_URL=db_engine.url.render_as_string(hide_password=False),
                REDIS_URL=os.environ["TEST_REDIS_URL"], LEDGER_QUEUE_NAME=queue.name,
-               PGOPTIONS=f"-csearch_path={schema}", PYTHONPATH=str(ROOT / "src"))
+               PGOPTIONS=f"-csearch_path={schema}", PGAPPNAME=queue.name, PYTHONPATH=str(ROOT / "src"))
     return subprocess.Popen([sys.executable, "-m", "ledger.jobs.worker", "--burst"], cwd=ROOT, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
@@ -227,19 +227,22 @@ def test_job_routes_require_auth(client, authorization):
             assert response.headers["www-authenticate"] == "Bearer"
 
 
-def test_dispatch_failure_is_persisted_and_key_not_redispatched(client, db_engine, monkeypatch):
+def test_dispatch_failure_is_persisted_and_key_not_redispatched(client, db_engine, queue, monkeypatch):
+    from redis.exceptions import ConnectionError
+
     aid = account(client)
-    unavailable = Redis(host="127.0.0.1", port=1, socket_connect_timeout=.1, socket_timeout=.1)
-    queue = Queue("unavailable", connection=unavailable, serializer=JSONSerializer)
-    try:
-        with TestClient(create_app(engine=db_engine, job_queue=queue), headers=client.headers) as failing:
-            job = submit(failing, aid, "dispatch-failure")
-            assert job["status"] == "failed" and job["attempt_count"] == 0
-            assert job["failure_details"]["code"] == "dispatch_failed"
-            assert job["started_at"] is None and job["finished_at"] is not None
-            assert submit(failing, aid, "dispatch-failure") == job
-    finally:
-        unavailable.close()
+    with monkeypatch.context() as patch:
+        def unavailable(*args, **kwargs):
+            raise ConnectionError("private transport details")
+        patch.setattr(queue, "enqueue", unavailable)
+        job = submit(client, aid, "dispatch-failure")
+        assert job["status"] == "queued" and job["attempt_count"] == 0
+        assert job["failure_details"]["code"] == "dispatch_failed"
+        assert job["failure_details"]["retryable"] is True
+        assert job["started_at"] is None and job["finished_at"] is None
+        assert job["next_attempt_at"] is not None
+        assert submit(client, aid, "dispatch-failure") == job
+        assert "private transport" not in str(job)
 
 
 def test_sync_and_status_work_without_redis_configuration(client, db_engine, monkeypatch):

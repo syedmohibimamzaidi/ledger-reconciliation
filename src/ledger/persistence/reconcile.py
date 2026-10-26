@@ -183,36 +183,49 @@ def reconcile_account(engine: Engine, account_id: UUID) -> ReconciliationSummary
     if engine.dialect.name != "postgresql":
         raise ValueError("reconciliation requires PostgreSQL")
     with engine.begin() as connection:
-        if connection.scalar(select(Account.id).where(Account.id == account_id).with_for_update()) is None:
-            raise ValueError("account_id does not identify an existing account")
-        receipts, transactions, previous = _load_account_state(connection, account_id)
-        accepted = {rid: row.bank_transaction_id for rid, row in previous.items() if row.status == "matched"}
-        outcomes = decide(receipts, transactions, accepted, _load_rejections(connection, account_id))
-        written = 0
-        for rid, outcome in outcomes.items():
-            old = previous.get(rid)
-            if old and old.status == outcome.status and old.details == outcome.details:
-                continue
-            revision = old.revision + 1 if old else 1
-            values = {"status": outcome.status, "bank_transaction_id": outcome.bank_transaction_id,
-                      "details": outcome.details, "revision": revision}
-            if old:
-                connection.execute(update(ReconciliationDecision).where(
-                    ReconciliationDecision.id == old.id).values(**values, updated_at=func.now()))
-            else:
-                connection.execute(insert(ReconciliationDecision).values(
-                    **values, receipt_id=rid, account_id=account_id))
-            connection.execute(insert(AuditEvent).values(
-                receipt_id=rid, event_type="receipt.reconciliation_decided",
-                payload={"account_id": str(account_id), "revision": revision,
-                         "status": outcome.status,
-                         "bank_transaction_id": str(outcome.bank_transaction_id) if outcome.bank_transaction_id else None,
-                         **outcome.details}))
-            written += 1
-        statuses = ["matched"] * len(accepted) + [outcome.status for outcome in outcomes.values()]
-        summary = ReconciliationSummary(
-            matched=statuses.count("matched"), needs_review=statuses.count("needs_review"),
-            unmatched=statuses.count("unmatched"),
-            unmatched_transactions=len(transactions) - statuses.count("matched"), decisions_written=written,
-        )
+        return reconcile_account_in_transaction(connection, account_id)
+
+
+def reconcile_account_in_transaction(connection, account_id: UUID) -> ReconciliationSummary:
+    """Reuse reconciliation inside a caller-owned PostgreSQL transaction.
+
+    Background workers commit the fenced job result, decisions and audits together.
+    Exceptions must propagate to the caller so the entire transaction rolls back.
+    """
+    if not isinstance(account_id, UUID):
+        raise ValueError("account_id must be a UUID")
+    if connection.dialect.name != "postgresql" or not connection.in_transaction():
+        raise ValueError("reconciliation requires an active PostgreSQL transaction")
+    if connection.scalar(select(Account.id).where(Account.id == account_id).with_for_update()) is None:
+        raise ValueError("account_id does not identify an existing account")
+    receipts, transactions, previous = _load_account_state(connection, account_id)
+    accepted = {rid: row.bank_transaction_id for rid, row in previous.items() if row.status == "matched"}
+    outcomes = decide(receipts, transactions, accepted, _load_rejections(connection, account_id))
+    written = 0
+    for rid, outcome in outcomes.items():
+        old = previous.get(rid)
+        if old and old.status == outcome.status and old.details == outcome.details:
+            continue
+        revision = old.revision + 1 if old else 1
+        values = {"status": outcome.status, "bank_transaction_id": outcome.bank_transaction_id,
+                  "details": outcome.details, "revision": revision}
+        if old:
+            connection.execute(update(ReconciliationDecision).where(
+                ReconciliationDecision.id == old.id).values(**values, updated_at=func.now()))
+        else:
+            connection.execute(insert(ReconciliationDecision).values(
+                **values, receipt_id=rid, account_id=account_id))
+        connection.execute(insert(AuditEvent).values(
+            receipt_id=rid, event_type="receipt.reconciliation_decided",
+            payload={"account_id": str(account_id), "revision": revision,
+                     "status": outcome.status,
+                     "bank_transaction_id": str(outcome.bank_transaction_id) if outcome.bank_transaction_id else None,
+                     **outcome.details}))
+        written += 1
+    statuses = ["matched"] * len(accepted) + [outcome.status for outcome in outcomes.values()]
+    summary = ReconciliationSummary(
+        matched=statuses.count("matched"), needs_review=statuses.count("needs_review"),
+        unmatched=statuses.count("unmatched"),
+        unmatched_transactions=len(transactions) - statuses.count("matched"), decisions_written=written,
+    )
     return summary

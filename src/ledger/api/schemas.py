@@ -188,6 +188,7 @@ class JobSubmit(Input):
 class JobFailure(BaseModel):
     code: str
     message: str
+    retryable: bool = False
 
 
 class JobOut(BaseModel):
@@ -202,3 +203,7 @@ class JobOut(BaseModel):
     finished_at: datetime | None
     result_summary: ReconcileOut | None
     failure_details: JobFailure | None
+    max_attempts: int
+    next_attempt_at: datetime | None
+    dispatch_after: datetime | None
+    lease_expires_at: datetime | None

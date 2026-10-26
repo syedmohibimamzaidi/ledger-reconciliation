@@ -1,4 +1,4 @@
-.PHONY: help venv setup test test-postgres migrate demo-ingestion demo-bank-ingestion demo-reconciliation demo-review api demo-api worker demo-jobs test-jobs eval eval-easy eval-sroie eval-test data clean
+.PHONY: help venv setup test test-postgres migrate demo-ingestion demo-bank-ingestion demo-reconciliation demo-review api demo-api worker dispatcher demo-jobs demo-job-recovery test-jobs eval eval-easy eval-sroie eval-test data clean
 
 PYTHON ?= 3.12
 VENV   := .venv
@@ -49,7 +49,7 @@ test-postgres: setup
 test-jobs: setup
 	@test -n "$$TEST_DATABASE_URL" || (echo 'Set TEST_DATABASE_URL first'; exit 1)
 	@test -n "$$TEST_REDIS_URL" || (echo 'Set TEST_REDIS_URL first'; exit 1)
-	$(PY) -m pytest tests/test_jobs.py -q
+	$(PY) -m pytest tests/test_jobs.py tests/test_job_recovery.py -q
 
 migrate: setup
 	$(PY) -m alembic upgrade head
@@ -74,6 +74,12 @@ demo-api: setup
 
 worker: setup
 	$(PY) -m ledger.jobs.worker
+
+dispatcher: setup
+	$(PY) -m ledger.jobs.dispatcher
+
+demo-job-recovery: setup
+	$(PY) scripts/demo_job_recovery.py
 
 demo-jobs: setup
 	$(PY) scripts/demo_jobs.py

@@ -1,1 +1,1 @@
-"""Best-effort Redis dispatch with durable PostgreSQL job status."""
+"""Recoverable dispatch and bounded, fenced reconciliation attempts."""

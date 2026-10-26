@@ -59,8 +59,8 @@ All paths are relative to `http://127.0.0.1:8000`. Business requests require
 | `POST /accounts/{account_id}/transactions/import` | `{ "csv_text": "source_transaction_id,date,merchant,amount,currency\n..." }` (up to 2,000,000 characters) → `inserted`, `skipped`; whole-file validation and atomic import |
 | `GET /accounts/{account_id}/transactions` | Stored transaction page |
 | `POST /accounts/{account_id}/reconciliation` | No body; synchronously reconciles the full account → `matched`, `needs_review`, `unmatched`, `unmatched_transactions`, `decisions_written` |
-| `POST /accounts/{account_id}/reconciliation-jobs` | `{ "request_key": "stable-key" }` → 202 with job ID/status and Location; [worker setup, idempotency and limitations](background-reconciliation.md) |
-| `GET /accounts/{account_id}/reconciliation-jobs/{job_id}` | Persisted job status, attempt count, timestamps, result summary and safe failure details |
+| `POST /accounts/{account_id}/reconciliation-jobs` | `{ "request_key": "stable-key" }` → 202 with job ID/status and Location; [worker setup, idempotency and recovery](background-reconciliation.md) |
+| `GET /accounts/{account_id}/reconciliation-jobs/{job_id}` | Persisted job status, attempt count/budget, retry/dispatch/lease timing, timestamps, result summary and safe failure details |
 | `GET /accounts/{account_id}/outcomes` | Current persisted decision page with revisions and evidence; no run history or refresh |
 | `GET /accounts/{account_id}/review-cases` | Persisted needs-review snapshots with revisions, active candidates, and rejection history |
 | `POST /accounts/{account_id}/review-cases/{receipt_id}/confirm` | Review body below; optionally `acknowledge_amount_mismatch` (strict boolean, default false) |
@@ -131,6 +131,9 @@ or commits their work. Creation/assignment are explicitly separate operations:
 a successful submission remains unassigned if a later assignment fails, and may
 be safely retried. Imports, reconciliation and review retain their existing atomic
 state-plus-audit guarantees, locks, revision checks and duplicate protection.
+Background reconciliation reuses the same rules inside a fenced transaction that
+commits job success, decisions and audit events together; its durable dispatcher
+and bounded retries are described in the [recovery contract](background-reconciliation.md).
 Account creation uses its own short transaction. No migrations run on server start.
 
 ## Verification

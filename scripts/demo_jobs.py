@@ -1,6 +1,6 @@
 """Repeatable HTTP demo: submit, receive job ID, poll, succeed.
 
-Start both `make api` and `make worker` first. No direct database/Redis access here.
+Start `make api`, `make worker` and `make dispatcher` first. No direct database/Redis access here.
 """
 import os
 from pathlib import Path
@@ -56,7 +56,7 @@ def main():
             if job["status"] == "failed":
                 raise RuntimeError(f"Job failed: {job['failure_details']}")
             time.sleep(.2)
-        raise RuntimeError(f"Job {job_id} did not finish in 30 seconds. Check the separate worker; no automatic recovery is provided.")
+        raise RuntimeError(f"Job {job_id} did not finish in 30 seconds. Check the worker and dispatcher; inspect the persisted recovery timing.")
 
 
 if __name__ == "__main__":

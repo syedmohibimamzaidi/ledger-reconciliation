@@ -188,24 +188,30 @@ class AuditEvent(Base):
 
 
 class ReconciliationJob(Base):
-    """Durable status; Redis delivery and service commits are separate operations."""
+    """Durable dispatch intent and fenced execution status, authoritative over Redis."""
 
     __tablename__ = "reconciliation_jobs"
     __table_args__ = (
         UniqueConstraint("request_key", name="uq_reconciliation_job_request"),
         CheckConstraint("btrim(request_key) <> ''", name="ck_reconciliation_job_key"),
-        CheckConstraint("attempt_count BETWEEN 0 AND 1", name="ck_reconciliation_job_attempts"),
+        CheckConstraint("max_attempts BETWEEN 1 AND 10 AND attempt_count BETWEEN 0 AND max_attempts",
+                        name="ck_reconciliation_job_attempts"),
         CheckConstraint(
-            "(status = 'queued' AND attempt_count = 0 AND started_at IS NULL AND finished_at IS NULL "
-            "AND result_summary IS NULL AND failure_details IS NULL) OR "
-            "(status = 'running' AND attempt_count = 1 AND started_at IS NOT NULL AND finished_at IS NULL "
-            "AND result_summary IS NULL AND failure_details IS NULL) OR "
-            "(status = 'succeeded' AND attempt_count = 1 AND started_at IS NOT NULL AND finished_at IS NOT NULL "
-            "AND result_summary IS NOT NULL AND failure_details IS NULL) OR "
+            "(status = 'queued' AND attempt_count < max_attempts AND finished_at IS NULL "
+            "AND result_summary IS NULL AND attempt_token IS NULL AND lease_expires_at IS NULL "
+            "AND next_attempt_at IS NOT NULL AND dispatch_after IS NOT NULL) OR "
+            "(status = 'running' AND attempt_count > 0 AND started_at IS NOT NULL AND finished_at IS NULL "
+            "AND result_summary IS NULL AND attempt_token IS NOT NULL AND lease_expires_at IS NOT NULL "
+            "AND next_attempt_at IS NULL AND dispatch_after IS NULL) OR "
+            "(status = 'succeeded' AND attempt_count > 0 AND started_at IS NOT NULL AND finished_at IS NOT NULL "
+            "AND result_summary IS NOT NULL AND failure_details IS NULL AND attempt_token IS NULL "
+            "AND lease_expires_at IS NULL AND next_attempt_at IS NULL AND dispatch_after IS NULL) OR "
             "(status = 'failed' AND finished_at IS NOT NULL AND result_summary IS NULL AND failure_details IS NOT NULL "
-            "AND ((attempt_count = 0 AND started_at IS NULL) OR (attempt_count = 1 AND started_at IS NOT NULL)))",
+            "AND attempt_token IS NULL AND lease_expires_at IS NULL AND next_attempt_at IS NULL AND dispatch_after IS NULL)",
             name="ck_reconciliation_job_state",
         ),
+        Index("ix_reconciliation_jobs_dispatch", "status", "dispatch_after"),
+        Index("ix_reconciliation_jobs_lease", "status", "lease_expires_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
@@ -220,3 +226,8 @@ class ReconciliationJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result_summary: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     failure_details: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    max_attempts: Mapped[int] = mapped_column(Integer, server_default="3")
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    dispatch_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    attempt_token: Mapped[UUID | None] = mapped_column(Uuid)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -7,14 +7,14 @@ decisions, and database failures.
 
 **Current interface:** an authenticated FastAPI interface for a single-user demo,
 with synchronous reconciliation and a separate Redis/RQ worker with persistent
-job status, alongside Python services and local demo scripts. See the
+job status, bounded retries and recoverable dispatch, alongside Python services and local demo scripts. See the
 [HTTP setup, endpoint contracts, and repeatable demo](docs/api.md).
 
 ## Implemented
 
 | Component | Behavior | Details |
 | --- | --- | --- |
-| Background reconciliation | Separate Redis/RQ worker, persistent PostgreSQL status, request idempotency and safe failures; best-effort delivery without recovery/retries | [Worker setup and HTTP demo](docs/background-reconciliation.md) |
+| Background reconciliation | Separate Redis/RQ worker and dispatcher, persistent status, bounded retries, interrupted-attempt recovery and fencing | [Worker setup and HTTP demo](docs/background-reconciliation.md) |
 | FastAPI demo | Bearer-token authentication, validated JSON contracts, bounded collection pages, Swagger, and account-scoped history | [HTTP API](docs/api.md) |
 | PostgreSQL persistence | SQLAlchemy models and Alembic migrations for accounts, receipts, transactions, reconciliation decisions, review actions, and audit events | [Models](src/ledger/persistence/models.py), [migrations](migrations/versions/) |
 | Structured receipt ingestion | Validated dates, Decimal amounts, currency, and source identity; duplicate submissions return the same receipt ID | [Receipt ingestion](docs/receipt-ingestion.md) |
@@ -84,7 +84,8 @@ After setup and migrations, each demo can be run independently:
 | `make demo-ingestion` | Submit one receipt twice: same UUID, one receipt, one creation event |
 | `make demo-bank-ingestion` | Import the [sample CSV](data/samples/bank-transactions.csv) twice: unchanged transaction and creation-event counts |
 | `make demo-reconciliation` | A clear match, an amount mismatch, an ambiguous case, and an unmatched receipt |
-| `make demo-jobs` | HTTP submit → job ID → poll → succeed; requires the API and separate `make worker`, see [setup](docs/background-reconciliation.md) |
+| `make demo-job-recovery` | Controlled temporary failure → backoff → successful retry, with duplicate-decision/audit checks in an isolated demo schema |
+| `make demo-jobs` | HTTP submit → job ID → poll → succeed; requires the API, separate `make worker` and `make dispatcher`, see [setup](docs/background-reconciliation.md) |
 | `make demo-api` | HTTP ingest → reconcile → review → audit history against a running API; see [setup](docs/api.md) |
 | `make demo-review` | Confirm an ambiguous candidate and reject another pair; reconciliation preserves both actions without duplicate human-action events |
 
@@ -166,9 +167,8 @@ receipt-image extraction are not prerequisites for the backend MVP.
 
 ## Planned
 
-- **Background processing recovery:** automatic retries, reliable dispatch recovery,
-  and interrupted-worker recovery. Current worker execution and persistent status
-  use [best-effort delivery](docs/background-reconciliation.md#temporary-failure-limitations).
+- **Additional background workflows:** imports, cancellation and manual retry controls.
+  Reconciliation retries and recovery are [implemented](docs/background-reconciliation.md).
 - **Dashboard:** browse imports, reconciliation outcomes, review cases, and history.
 - **Deployment:** package and host a demonstrable backend and dashboard.
 
