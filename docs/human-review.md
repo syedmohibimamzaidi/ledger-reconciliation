@@ -1,8 +1,9 @@
 # Human review of reconciliation candidates
 
 Caller-driven Python services list review cases, confirm a candidate, and reject
-one receipt/transaction pair. Reviewer identity is supplied by the caller;
-authentication, API endpoints, undo, and reopening are deferred. Existing ingestion
+one receipt/transaction pair. Python callers supply reviewer identity. The
+[HTTP API](api.md) derives reviewer identity from demo authentication; undo and
+reopening remain deferred. Existing ingestion
 identities, account scope, and the independent evaluation pipeline remain intact.
 
 ## Local demonstration

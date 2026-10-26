@@ -5,13 +5,15 @@ safely reconciling them, reviewing uncertain candidates, and preserving an audit
 history. The focus is correctness under duplicate submissions, concurrent
 decisions, and database failures.
 
-**Current interface:** synchronous Python service functions and local demo scripts.
-There are no HTTP endpoints, authentication, dashboard, or background workers yet.
+**Current interface:** an authenticated, synchronous FastAPI interface for a
+single-user demo, alongside Python services and local demo scripts. See the
+[HTTP setup, endpoint contracts, and repeatable demo](docs/api.md).
 
 ## Implemented
 
 | Component | Behavior | Details |
 | --- | --- | --- |
+| FastAPI demo | Bearer-token authentication, validated JSON contracts, bounded collection pages, Swagger, and account-scoped history | [HTTP API](docs/api.md) |
 | PostgreSQL persistence | SQLAlchemy models and Alembic migrations for accounts, receipts, transactions, reconciliation decisions, review actions, and audit events | [Models](src/ledger/persistence/models.py), [migrations](migrations/versions/) |
 | Structured receipt ingestion | Validated dates, Decimal amounts, currency, and source identity; duplicate submissions return the same receipt ID | [Receipt ingestion](docs/receipt-ingestion.md) |
 | Bank CSV ingestion | Account-scoped records with signed amounts; whole-file validation, atomic imports, and inserted/skipped summaries | [CSV format and ingestion](docs/bank-ingestion.md) |
@@ -53,11 +55,15 @@ make demo-review
 
 Compose runs PostgreSQL 16 on localhost port **55432**, with local development
 credentials and a named volume. `docker compose stop` stops it while retaining
-data. The commands above run service demos; they do not start an API or website.
+data. The commands above run service demos. To start the authenticated HTTP API,
+configure the demo token and identity and run `make api` as described in the
+[API setup](docs/api.md#setup-and-http-walkthrough).
 
 | Environment variable | Used by |
 | --- | --- |
 | `DATABASE_URL` | Alembic migrations and database demo scripts; use a `postgresql+psycopg://` connection URL |
+| `LEDGER_DEMO_TOKEN` | Required bearer secret for all API business routes; generate locally, never commit |
+| `LEDGER_DEMO_IDENTITY` | Required single demo reviewer identity derived by the API from authentication |
 | `TEST_DATABASE_URL` | PostgreSQL integration tests; the user must have permission to create and drop test schemas |
 
 Service functions take a SQLAlchemy engine explicitly. See the feature docs above
@@ -72,6 +78,7 @@ After setup and migrations, each demo can be run independently:
 | `make demo-ingestion` | Submit one receipt twice: same UUID, one receipt, one creation event |
 | `make demo-bank-ingestion` | Import the [sample CSV](data/samples/bank-transactions.csv) twice: unchanged transaction and creation-event counts |
 | `make demo-reconciliation` | A clear match, an amount mismatch, an ambiguous case, and an unmatched receipt |
+| `make demo-api` | HTTP ingest → reconcile → review → audit history against a running API; see [setup](docs/api.md) |
 | `make demo-review` | Confirm an ambiguous candidate and reject another pair; reconciliation preserves both actions without duplicate human-action events |
 
 Demos persist their data and reuse stable identities on subsequent runs.
@@ -80,7 +87,7 @@ Demos persist their data and reuse stable identities on subsequent runs.
 
 ```sh
 export TEST_DATABASE_URL="$DATABASE_URL"
-make test-postgres   # persistence, reconciliation, and review tests
+make test-postgres   # persistence, reconciliation, review, and PostgreSQL API tests
 make test            # complete suite, including extraction/evaluation tests
 ```
 
@@ -119,7 +126,10 @@ Accepted matches stay fixed; undo, reopening, and account reassignment are
 deferred. Refunds, split payments, currency conversion, fuzzy merchant aliases,
 and longer settlement windows are not supported. Amounts use `NUMERIC(18,2)`;
 currency validation checks code shape rather than currency-specific minor units.
-Reviewer identity is caller-supplied. Services append audit events, but database
+Python services accept caller-supplied reviewer identity; the HTTP API derives it
+from the one authenticated demo identity and rejects client reviewer fields. This
+is a single-user demo with access to all accounts, without registration or
+multi-user authorization. Services append audit events, but database
 administrator tamper protection is not implemented. See the
 [reconciliation](docs/reconciliation.md) and [review](docs/human-review.md) docs
 for full rules and migration limitations.
@@ -147,12 +157,10 @@ receipt-image extraction are not prerequisites for the backend MVP.
 
 ## Planned
 
-- **FastAPI endpoints and authentication:** expose ingestion, reconciliation,
-  review, and audit history through an authenticated service interface.
 - **Background processing:** durable jobs with bounded retries and failed-job
   handling.
 - **Dashboard:** browse imports, reconciliation outcomes, review cases, and history.
 - **Deployment:** package and host a demonstrable backend and dashboard.
 
-These are future milestones; the current implementation is exercised through
-Python services, tests, and the local demos above.
+These remain future milestones. The current implementation is exercised through
+the HTTP API, Python services, tests, and local demos above.
