@@ -53,6 +53,7 @@ class Account(Base):
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class BankTransaction(Base):
@@ -212,6 +213,7 @@ class ReconciliationJob(Base):
         ),
         Index("ix_reconciliation_jobs_dispatch", "status", "dispatch_after"),
         Index("ix_reconciliation_jobs_lease", "status", "lease_expires_at"),
+        Index("ix_reconciliation_jobs_account_created", "account_id", "created_at", "id"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)

@@ -139,7 +139,8 @@ def assign_receipts_to_account(engine: Engine, account_id: UUID, receipt_ids: li
             connection.execute(update(Receipt).where(Receipt.id == row.id).values(
                 account_id=account_id, updated_at=func.now()))
             connection.execute(insert(AuditEvent).values(
-                receipt_id=row.id, event_type="receipt.scoped", payload={"account_id": str(account_id)}))
+                receipt_id=row.id, event_type="receipt.scoped", payload={"account_id": str(account_id)},
+                created_at=func.clock_timestamp()))
             assigned += 1
     return assigned
 
@@ -198,6 +199,11 @@ def reconcile_account_in_transaction(connection, account_id: UUID) -> Reconcilia
         raise ValueError("reconciliation requires an active PostgreSQL transaction")
     if connection.scalar(select(Account.id).where(Account.id == account_id).with_for_update()) is None:
         raise ValueError("account_id does not identify an existing account")
+    # Imports hold KEY SHARE and assignment holds UPDATE on this same account.
+    # Capture a cutoff after locking; later inputs cannot be hidden by an old
+    # transaction-start timestamp, even when ingestion was waiting for this run.
+    # Decisions and audits reuse it so they never sort before inputs they consumed.
+    reconciled_at = connection.scalar(select(func.clock_timestamp()))
     receipts, transactions, previous = _load_account_state(connection, account_id)
     accepted = {rid: row.bank_transaction_id for rid, row in previous.items() if row.status == "matched"}
     outcomes = decide(receipts, transactions, accepted, _load_rejections(connection, account_id))
@@ -211,12 +217,12 @@ def reconcile_account_in_transaction(connection, account_id: UUID) -> Reconcilia
                   "details": outcome.details, "revision": revision}
         if old:
             connection.execute(update(ReconciliationDecision).where(
-                ReconciliationDecision.id == old.id).values(**values, updated_at=func.now()))
+                ReconciliationDecision.id == old.id).values(**values, updated_at=reconciled_at))
         else:
             connection.execute(insert(ReconciliationDecision).values(
-                **values, receipt_id=rid, account_id=account_id))
+                **values, receipt_id=rid, account_id=account_id, created_at=reconciled_at, updated_at=reconciled_at))
         connection.execute(insert(AuditEvent).values(
-            receipt_id=rid, event_type="receipt.reconciliation_decided",
+            receipt_id=rid, event_type="receipt.reconciliation_decided", created_at=reconciled_at,
             payload={"account_id": str(account_id), "revision": revision,
                      "status": outcome.status,
                      "bank_transaction_id": str(outcome.bank_transaction_id) if outcome.bank_transaction_id else None,
@@ -228,4 +234,5 @@ def reconcile_account_in_transaction(connection, account_id: UUID) -> Reconcilia
         unmatched=statuses.count("unmatched"),
         unmatched_transactions=len(transactions) - statuses.count("matched"), decisions_written=written,
     )
+    connection.execute(update(Account).where(Account.id == account_id).values(last_reconciled_at=reconciled_at))
     return summary

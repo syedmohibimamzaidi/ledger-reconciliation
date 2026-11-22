@@ -15,6 +15,7 @@ job status, bounded retries and recoverable dispatch, alongside Python services 
 | Component | Behavior | Details |
 | --- | --- | --- |
 | Background reconciliation | Separate Redis/RQ worker and dispatcher, persistent status, bounded retries, interrupted-attempt recovery and fencing | [Worker setup and HTTP demo](docs/background-reconciliation.md) |
+| Dashboard API preparation | Snapshot-consistent account summary, debit/credit split, input cutoff, record details, job browsing and filters | [Read contracts](docs/api.md#dashboard-summary-semantics) |
 | FastAPI demo | Bearer-token authentication, validated JSON contracts, bounded collection pages, Swagger, and account-scoped history | [HTTP API](docs/api.md) |
 | PostgreSQL persistence | SQLAlchemy models and Alembic migrations for accounts, receipts, transactions, reconciliation decisions, review actions, and audit events | [Models](src/ledger/persistence/models.py), [migrations](migrations/versions/) |
 | Structured receipt ingestion | Validated dates, Decimal amounts, currency, and source identity; duplicate submissions return the same receipt ID | [Receipt ingestion](docs/receipt-ingestion.md) |

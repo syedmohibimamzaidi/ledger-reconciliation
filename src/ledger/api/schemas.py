@@ -38,6 +38,7 @@ class AccountCreate(Input):
 class AccountOut(AccountCreate):
     id: UUID
     created_at: datetime
+    last_reconciled_at: datetime | None
 
 
 def iso_date(value):
@@ -207,3 +208,45 @@ class JobOut(BaseModel):
     next_attempt_at: datetime | None
     dispatch_after: datetime | None
     lease_expires_at: datetime | None
+
+
+class ReceiptDetail(ReceiptOut):
+    decision: DecisionOut | None
+
+
+class DashboardJobOut(JobOut):
+    display_status: Literal["queued", "retrying", "running", "succeeded", "failed"]
+
+
+class ReceiptCounts(BaseModel):
+    total: int
+    matched: int
+    needs_review: int
+    unmatched: int
+    without_decision: int
+    assigned_since_last_run: int
+
+
+class TransactionCounts(BaseModel):
+    total: int
+    matched_debits: int
+    unmatched_debits: int
+    credits_not_eligible: int
+    zero_amount_not_eligible: int
+    imported_since_last_run: int
+
+
+class ActiveJobCounts(BaseModel):
+    queued: int
+    retrying: int
+    running: int
+
+
+class AccountSummary(BaseModel):
+    account_id: UUID
+    last_reconciled_at: datetime | None
+    receipts: ReceiptCounts
+    transactions: TransactionCounts
+    active_jobs: ActiveJobCounts
+    latest_job: DashboardJobOut | None
+    has_new_reconciliation_inputs: bool

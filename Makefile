@@ -44,7 +44,7 @@ test: setup
 
 test-postgres: setup
 	@test -n "$$TEST_DATABASE_URL" || (echo 'Set TEST_DATABASE_URL first'; exit 1)
-	$(PY) -m pytest tests/test_ingestion.py tests/test_bank_ingestion.py tests/test_reconciliation.py tests/test_reconciliation_rules.py tests/test_review.py tests/test_api.py -q
+	$(PY) -m pytest tests/test_ingestion.py tests/test_bank_ingestion.py tests/test_reconciliation.py tests/test_reconciliation_rules.py tests/test_review.py tests/test_api.py tests/test_dashboard_api.py -q
 
 test-jobs: setup
 	@test -n "$$TEST_DATABASE_URL" || (echo 'Set TEST_DATABASE_URL first'; exit 1)

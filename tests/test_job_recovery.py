@@ -10,7 +10,7 @@ from sqlalchemy import func, select, text, update
 from ledger.jobs.service import (
     claim_attempt, dispatch_due, fail_attempt, get_job, recover_expired, run_attempt,
 )
-from ledger.persistence.models import AuditEvent, ReconciliationDecision, ReconciliationJob as Job
+from ledger.persistence.models import Account, AuditEvent, ReconciliationDecision, ReconciliationJob as Job
 from test_jobs import account, client, finish_worker, queue, seed, start_worker, submit
 
 
@@ -253,10 +253,14 @@ def test_completion_write_failure_rolls_back_decisions_and_audit(client, db_engi
     finish_worker(start_worker(db_engine, queue))
     assert state(client, aid, job)["status"] == "queued"
     assert counts(db_engine) == (0, 0)  # Domain writes preceded the failing completion write.
+    with db_engine.connect() as connection:
+        assert connection.scalar(select(Account.last_reconciled_at).where(Account.id == UUID(aid))) is None
     due(db_engine, job["id"])
     dispatch_due(db_engine, queue)
     finish_worker(start_worker(db_engine, queue))
     assert state(client, aid, job)["status"] == "succeeded" and counts(db_engine) == (1, 1)
+    with db_engine.connect() as connection:
+        assert connection.scalar(select(Account.last_reconciled_at).where(Account.id == UUID(aid))) is not None
 
 
 def test_migrate_existing_jobs_into_recovery_state(client, db_engine):

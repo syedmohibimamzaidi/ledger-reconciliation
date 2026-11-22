@@ -7,7 +7,7 @@ from io import StringIO
 import re
 from uuid import UUID
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from .ingest import IdentityConflict
@@ -124,18 +124,21 @@ def import_bank_transactions(engine: Engine, account_id: UUID, csv_text: str) ->
         unique.setdefault(record.fields["source_transaction_id"], record)
     inserted = 0
     with engine.begin() as connection:
-        if connection.scalar(select(Account.id).where(Account.id == account_id)) is None:
+        # Parallel imports can share this lock; reconciliation's account UPDATE
+        # lock waits for complete imports and excludes later ones from its cutoff.
+        if connection.scalar(select(Account.id).where(Account.id == account_id)
+                             .with_for_update(read=True, key_share=True)) is None:
             raise ValueError("account_id does not identify an existing account")
         # Consistent lock ordering prevents reversed overlapping files from
         # deadlocking on the source-identity unique constraint.
         for source_id, record in sorted(unique.items()):
             fields = {**record.fields, "account_id": account_id}
-            transaction_id = connection.execute(
-                insert(BankTransaction).values(**fields)
+            created = connection.execute(
+                insert(BankTransaction).values(**fields, created_at=func.clock_timestamp())
                 .on_conflict_do_nothing(constraint="uq_bank_transactions_source_identity")
-                .returning(BankTransaction.id)
-            ).scalar_one_or_none()
-            if transaction_id is None:
+                .returning(BankTransaction.id, BankTransaction.created_at)
+            ).one_or_none()
+            if created is None:
                 existing = connection.execute(select(BankTransaction.__table__).where(
                     BankTransaction.account_id == account_id,
                     BankTransaction.source_transaction_id == source_id,
@@ -143,11 +146,13 @@ def import_bank_transactions(engine: Engine, account_id: UUID, csv_text: str) ->
                 if any(existing[key] != value for key, value in fields.items()):
                     raise TransactionIdentityConflict(record.row, source_id)
                 continue
+            transaction_id, created_at = created
             payload = {**record.fields, "account_id": str(account_id),
                        "transaction_date": fields["transaction_date"].isoformat(),
                        "amount": format(fields["amount"], ".2f")}
             connection.execute(insert(AuditEvent).values(
                 bank_transaction_id=transaction_id, event_type="bank_transaction.created", payload=payload,
+                created_at=created_at,
             ))
             inserted += 1
     return ImportSummary(inserted=inserted, skipped=len(records) - inserted)

@@ -2,7 +2,7 @@
 from contextlib import asynccontextmanager
 import hmac
 import os
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, FastAPI, Query, Response
@@ -121,10 +121,22 @@ def create_app(*, engine: Engine | None = None, job_queue=None) -> FastAPI:
         return ingest_receipt(engine, StructuredReceipt(**body.model_dump()))
 
     @router.get("/receipts", response_model=s.Page[s.ReceiptOut])
-    def receipts(limit: Limit = 50, offset: Offset = 0, account_id: UUID | None = None):
+    def receipts(limit: Limit = 50, offset: Offset = 0, account_id: UUID | None = None,
+                 unassigned: bool = False):
+        if unassigned and account_id is not None:
+            raise APIError(422, "invalid_input", "unassigned=true cannot be combined with account_id")
         if account_id is not None:
             store.account(account_id)
-        return page(store.page(Receipt, limit, offset, account_id), limit, offset)
+        filters = (Receipt.account_id.is_(None),) if unassigned else ()
+        return page(store.page(Receipt, limit, offset, account_id, filters=filters), limit, offset)
+
+    @router.get("/receipts/{receipt_id}", response_model=s.ReceiptDetail)
+    def receipt_detail(receipt_id: UUID):
+        return store.receipt_detail(receipt_id)
+
+    @router.get("/accounts/{account_id}/summary", response_model=s.AccountSummary)
+    def summary(account_id: UUID):
+        return store.summary(account_id)
 
     @router.post("/accounts/{account_id}/receipts/assign", response_model=s.AssignmentOut)
     def assign(account_id: UUID, body: s.Assignment):
@@ -141,15 +153,27 @@ def create_app(*, engine: Engine | None = None, job_queue=None) -> FastAPI:
         store.account(account_id)
         return page(store.page(BankTransaction, limit, offset, account_id), limit, offset)
 
+    @router.get("/accounts/{account_id}/transactions/{transaction_id}", response_model=s.TransactionOut)
+    def transaction_detail(account_id: UUID, transaction_id: UUID):
+        store.account(account_id)
+        return store.require(BankTransaction, transaction_id, account_id)
+
     @router.post("/accounts/{account_id}/reconciliation", response_model=s.ReconcileOut)
     def reconcile(account_id: UUID):
         store.account(account_id)
         return reconcile_account(engine, account_id)
 
     @router.get("/accounts/{account_id}/outcomes", response_model=s.Page[s.DecisionOut])
-    def outcomes(account_id: UUID, limit: Limit = 50, offset: Offset = 0):
+    def outcomes(account_id: UUID, limit: Limit = 50, offset: Offset = 0,
+                 status: Literal["matched", "needs_review", "unmatched"] | None = None,
+                 receipt_id: UUID | None = None):
         store.account(account_id)
-        return page(store.page(ReconciliationDecision, limit, offset, account_id), limit, offset)
+        filters = []
+        if status is not None:
+            filters.append(ReconciliationDecision.status == status)
+        if receipt_id is not None:
+            filters.append(ReconciliationDecision.receipt_id == receipt_id)
+        return page(store.page(ReconciliationDecision, limit, offset, account_id, filters=filters), limit, offset)
 
     @router.get("/accounts/{account_id}/review-cases", response_model=s.Page[s.ReviewCaseOut])
     def cases(account_id: UUID, limit: Limit = 50, offset: Offset = 0):
@@ -169,9 +193,16 @@ def create_app(*, engine: Engine | None = None, job_queue=None) -> FastAPI:
         return reject_candidate(engine, account_id, receipt_id, reviewer=reviewer, **body.model_dump())
 
     @router.get("/accounts/{account_id}/audit-events", response_model=s.Page[s.AuditOut])
-    def audit(account_id: UUID, limit: Limit = 50, offset: Offset = 0):
+    def audit(account_id: UUID, limit: Limit = 50, offset: Offset = 0,
+              order: Literal["oldest", "newest"] = "oldest"):
         store.account(account_id)
-        return page(store.audit(account_id, limit, offset), limit, offset)
+        return page(store.audit(account_id, limit, offset, newest=order == "newest"), limit, offset)
+
+    @router.get("/accounts/{account_id}/reconciliation-jobs", response_model=s.Page[s.DashboardJobOut])
+    def jobs(account_id: UUID, limit: Limit = 50, offset: Offset = 0,
+             status: Literal["queued", "retrying", "running", "succeeded", "failed"] | None = None):
+        store.account(account_id)
+        return page(store.jobs(account_id, limit, offset, status), limit, offset)
 
     @router.post("/accounts/{account_id}/reconciliation-jobs", response_model=s.JobOut, status_code=202)
     def submit_reconciliation(account_id: UUID, body: s.JobSubmit, response: Response):

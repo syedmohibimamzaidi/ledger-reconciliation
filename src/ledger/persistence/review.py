@@ -108,6 +108,9 @@ def _apply_review(engine, account_id, receipt_id, bank_transaction_id, action,
                "acknowledge_amount_mismatch": acknowledge_amount_mismatch}
     with engine.begin() as connection:
         _lock_account(connection, account_id)
+        # Wall-clock time after the lock: a review that waited behind an import
+        # or reconciliation must not be timestamped before the state it reviewed.
+        reviewed_at = connection.scalar(select(func.clock_timestamp()))
         prior = connection.execute(select(ReviewAction.__table__).where(
             ReviewAction.account_id == account_id, ReviewAction.request_id == request_id)).mappings().one_or_none()
         if prior:
@@ -157,12 +160,12 @@ def _apply_review(engine, account_id, receipt_id, bank_transaction_id, action,
         reviewed_at = connection.execute(insert(ReviewAction).values(
             id=action_id, request_id=request_id, account_id=account_id, **request,
             resulting_revision=revision, resulting_status=status, receipt_amount=receipt.amount,
-            bank_amount=transaction.amount, snapshot=snapshot,
+            bank_amount=transaction.amount, snapshot=snapshot, created_at=reviewed_at,
         ).returning(ReviewAction.created_at)).scalar_one()
         connection.execute(update(ReconciliationDecision).where(ReconciliationDecision.id == case.id).values(
-            status=status, bank_transaction_id=chosen, details=details, revision=revision, updated_at=func.now()))
+            status=status, bank_transaction_id=chosen, details=details, revision=revision, updated_at=reviewed_at))
         connection.execute(insert(AuditEvent).values(
-            receipt_id=receipt_id, review_action_id=action_id, event_type="receipt.reviewed",
+            receipt_id=receipt_id, review_action_id=action_id, event_type="receipt.reviewed", created_at=reviewed_at,
             payload={"action_id": str(action_id), "request_id": str(request_id), "account_id": str(account_id),
                      "bank_transaction_id": str(bank_transaction_id), "action": action, "reviewer": reviewer,
                      "reason": reason, "reviewed_at": reviewed_at.isoformat(), "revision": revision,
