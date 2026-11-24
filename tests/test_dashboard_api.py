@@ -6,9 +6,11 @@ from threading import Event
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import event, func, select, text
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.exc import IntegrityError
 
+from ledger.api.app import create_app
 from ledger.jobs.service import claim_attempt, execute_job, fail_attempt, submit_job
 from ledger.persistence.bank_ingest import import_bank_transactions
 from ledger.persistence.ingest import StructuredReceipt, ingest_receipt
@@ -16,6 +18,27 @@ from ledger.persistence.models import Account, AuditEvent, BankTransaction, Reco
 from ledger.persistence.reconcile import assign_receipts_to_account, reconcile_account, reconcile_account_in_transaction
 from test_api import client, post
 from test_jobs import queue
+
+
+def test_dashboard_serves_entry_point_and_assets_without_opening_api_access(monkeypatch):
+    monkeypatch.setenv("LEDGER_DEMO_TOKEN", "test-only-dashboard-token")
+    monkeypatch.setenv("LEDGER_DEMO_IDENTITY", "Test reviewer")
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    engine = create_engine("postgresql+psycopg://")
+    try:
+        with TestClient(create_app(engine=engine)) as browser:
+            page = browser.get("/dashboard")
+            assert page.status_code == 200
+            assert page.url.path == "/dashboard/"
+            assert "Connect to your workbench" in page.text
+            assert "test-only-dashboard-token" not in page.text
+            for asset, media_type in (("app.js", "javascript"), ("styles.css", "text/css")):
+                response = browser.get(f"/dashboard/{asset}")
+                assert response.status_code == 200
+                assert media_type in response.headers["content-type"]
+            assert browser.get("/accounts").status_code == 401
+    finally:
+        engine.dispose()
 
 
 def account(client):

@@ -5,7 +5,7 @@ safely reconciling them, reviewing uncertain candidates, and preserving an audit
 history. The focus is correctness under duplicate submissions, concurrent
 decisions, and database failures.
 
-**Current interface:** an authenticated FastAPI interface for a single-user demo,
+**Current interface:** a browser dashboard and an authenticated FastAPI interface for a single-user demo,
 with synchronous reconciliation and a separate Redis/RQ worker with persistent
 job status, bounded retries and recoverable dispatch, alongside Python services and local demo scripts. See the
 [HTTP setup, endpoint contracts, and repeatable demo](docs/api.md).
@@ -15,7 +15,7 @@ job status, bounded retries and recoverable dispatch, alongside Python services 
 | Component | Behavior | Details |
 | --- | --- | --- |
 | Background reconciliation | Separate Redis/RQ worker and dispatcher, persistent status, bounded retries, interrupted-attempt recovery and fencing | [Worker setup and HTTP demo](docs/background-reconciliation.md) |
-| Dashboard API preparation | Snapshot-consistent account summary, debit/credit split, input cutoff, record details, job browsing and filters | [Read contracts](docs/api.md#dashboard-summary-semantics) |
+| Dashboard | Account overview, receipt entry and assignment, CSV import, review workbench, job history, and audit browsing | [Local dashboard setup](docs/dashboard.md) |
 | FastAPI demo | Bearer-token authentication, validated JSON contracts, bounded collection pages, Swagger, and account-scoped history | [HTTP API](docs/api.md) |
 | PostgreSQL persistence | SQLAlchemy models and Alembic migrations for accounts, receipts, transactions, reconciliation decisions, review actions, and audit events | [Models](src/ledger/persistence/models.py), [migrations](migrations/versions/) |
 | Structured receipt ingestion | Validated dates, Decimal amounts, currency, and source identity; duplicate submissions return the same receipt ID | [Receipt ingestion](docs/receipt-ingestion.md) |
@@ -170,7 +170,6 @@ receipt-image extraction are not prerequisites for the backend MVP.
 
 - **Additional background workflows:** imports, cancellation and manual retry controls.
   Reconciliation retries and recovery are [implemented](docs/background-reconciliation.md).
-- **Dashboard:** browse imports, reconciliation outcomes, review cases, and history.
 - **Deployment:** package and host a demonstrable backend and dashboard.
 
 These remain future milestones. The current implementation is exercised through

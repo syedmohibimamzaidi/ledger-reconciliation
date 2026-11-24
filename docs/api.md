@@ -1,11 +1,10 @@
 # Single-user demo API
 
-The FastAPI interface reuses the existing PostgreSQL services, with optional
-[background reconciliation jobs](background-reconciliation.md). No registration,
-user store, account ownership, multi-user authorization, UI,
-or deployment is provided. Anyone holding the one configured token can read and
-mutate **all** accounts and receipts. Account scope enforces reconciliation
-membership; it is not an authorization boundary.
+The [local dashboard](dashboard.md) uses this FastAPI interface, which reuses
+the PostgreSQL services and supports optional
+[background reconciliation jobs](background-reconciliation.md). Anyone holding
+the configured demo token can read and mutate **all** accounts and receipts.
+Account scope determines which records can participate in reconciliation.
 
 ## Setup and HTTP walkthrough
 

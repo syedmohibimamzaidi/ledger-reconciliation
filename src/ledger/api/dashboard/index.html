@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Ledger | Reconciliation workbench</title>
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" type="module"></script>
+</head>
+<body>
+  <section id="access" class="access">
+    <div class="access-card">
+      <div class="brand"><span class="mark" aria-hidden="true">L</span> Ledger</div>
+      <h1>Connect to your workbench</h1>
+      <p>Enter the demo token configured for this server.</p>
+      <form id="connect">
+        <label>Demo token<input type="password" name="token" required autocomplete="off"></label>
+        <button class="primary" type="submit">Connect</button>
+        <p id="connect-error" class="error" role="alert"></p>
+      </form>
+    </div>
+  </section>
+  <div id="workspace" class="workspace" hidden>
+    <a class="skip" href="#content">Skip to content</a>
+    <aside class="sidebar" aria-label="Workspace">
+      <div class="brand"><span class="mark" aria-hidden="true">L</span> Ledger</div>
+      <div class="sidebar-account">
+        <label for="account">Account</label>
+        <select id="account"></select>
+        <button type="button" id="add-account">Create account</button>
+      </div>
+      <nav id="navigation" aria-label="Workbench"></nav>
+      <button type="button" class="disconnect" id="disconnect">Disconnect</button>
+    </aside>
+    <main id="content" tabindex="-1">
+      <header id="heading"></header>
+      <div id="notice" role="status" aria-live="polite"></div>
+      <section id="view" aria-label="Current view"></section>
+    </main>
+  </div>
+  <dialog id="dialog" aria-labelledby="dialog-title">
+    <div class="dialog-head"><h2 id="dialog-title"></h2><button id="close" type="button">Close</button></div>
+    <div id="dialog-content"></div>
+  </dialog>
+</body>
+</html>

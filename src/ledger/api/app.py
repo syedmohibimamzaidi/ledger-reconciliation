@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 import hmac
 import os
+from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -9,6 +10,7 @@ from fastapi import APIRouter, Depends, FastAPI, Query, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import Engine, create_engine
 
 from ledger.jobs.queue import configured_queue
@@ -223,4 +225,6 @@ def create_app(*, engine: Engine | None = None, job_queue=None) -> FastAPI:
         return job
 
     app.include_router(router)
+    app.mount("/dashboard", StaticFiles(directory=Path(__file__).with_name("dashboard"), html=True),
+              name="dashboard")
     return app
