@@ -54,8 +54,9 @@ result = confirm_candidate(
 `ReviewCase` includes account and receipt UUIDs, revision, receipt fields, active
 candidate snapshots, reason codes, and rejection history with reviewer, reason,
 and timestamp. Only `needs_review` cases are listed. Listing is read-only; it does
-not refresh automatic outcomes. A candidate may have become unavailable through
-another case since its snapshot was calculated; confirmation always rechecks.
+not refresh automatic outcomes. Each listed candidate has an `already_matched`
+flag computed from current accepted matches. Confirmation rechecks availability
+because another case can claim the transaction after listing.
 
 For rejection use the same argument shape without the acknowledgement flag:
 

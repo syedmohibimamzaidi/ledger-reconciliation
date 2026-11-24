@@ -227,6 +227,10 @@ def test_transaction_cannot_be_confirmed_for_two_receipts(db_engine):
     confirm_candidate(db_engine, aid, r1, tid, **request())
     with pytest.raises(ReviewConflict, match="another receipt"):
         confirm_candidate(db_engine, aid, r2, tid, **request())
+    with pytest.raises(IntegrityError) as error, db_engine.begin() as connection:
+        connection.execute(update(ReconciliationDecision).where(ReconciliationDecision.receipt_id == r2)
+                           .values(status="matched", bank_transaction_id=tid))
+    assert error.value.orig.diag.constraint_name == "uq_reconciliation_transaction"
     reconcile_account(db_engine, aid)
     assert state(db_engine, r2)["status"] == "needs_review" and counts(db_engine) == (1, 1)
 
@@ -259,9 +263,14 @@ def test_audit_failure_rolls_back_action_case_and_rejection(db_engine, case, act
     assert not action(db_engine, aid, rid, tids[0], **inputs).repeated
 
 
-@pytest.mark.parametrize("identical_request", [False, True])
-def test_concurrent_reviews(db_engine, case, identical_request):
+@pytest.mark.parametrize("scenario", ["same_receipt", "identical_request", "same_transaction"])
+def test_concurrent_reviews(db_engine, case, scenario):
     aid, rid, tids = case
+    other_receipt = rid
+    if scenario == "same_transaction":
+        other_receipt = add_receipt(db_engine, aid)
+        reconcile_account(db_engine, aid)
+    revisions = {item.receipt_id: item.revision for item in list_review_cases(db_engine, aid)}
     barrier, thread_state = Barrier(2), local()
 
     def synchronize(connection, cursor, statement, parameters, context, executemany):
@@ -269,14 +278,17 @@ def test_concurrent_reviews(db_engine, case, identical_request):
             thread_state.started = True
             barrier.wait(timeout=15)
 
-    inputs = request()
+    inputs = request(expected_revision=revisions[rid])
 
     def submit(index):
+        receipt_id = (rid, other_receipt)[index]
+        transaction_id = tids[index] if scenario == "same_receipt" else tids[0]
         try:
-            return confirm_candidate(db_engine, aid, rid, tids[0] if identical_request else tids[index],
-                                     **(inputs if identical_request else request()))
-        except StaleReview:
-            return None
+            return confirm_candidate(db_engine, aid, receipt_id, transaction_id,
+                                     **(inputs if scenario == "identical_request" else
+                                        request(expected_revision=revisions[receipt_id])))
+        except ReviewConflict as error:
+            return error
 
     event.listen(db_engine, "before_cursor_execute", synchronize)
     try:
@@ -284,10 +296,19 @@ def test_concurrent_reviews(db_engine, case, identical_request):
             results = list(executor.map(submit, [0, 1]))
     finally:
         event.remove(db_engine, "before_cursor_execute", synchronize)
-    successful = [item for item in results if item is not None]
-    assert len(successful) == (2 if identical_request else 1)
+    conflicts = [item for item in results if isinstance(item, ReviewConflict)]
+    successful = [item for item in results if not isinstance(item, ReviewConflict)]
+    if scenario == "same_receipt":
+        assert len(conflicts) == 1 and isinstance(conflicts[0], StaleReview)
+    elif scenario == "same_transaction":
+        assert len(conflicts) == 1 and "already accepted for another receipt" in str(conflicts[0])
+        assert len(list_review_cases(db_engine, aid)) == 1
+    else:
+        assert not conflicts
     assert sum(not item.repeated for item in successful) == 1
-    assert counts(db_engine) == (1, 1) and state(db_engine, rid)["revision"] == 2
+    assert counts(db_engine) == (1, 1)
+    winner = successful[0].receipt_id
+    assert state(db_engine, winner)["revision"] == revisions[winner] + 1
 
 
 def test_database_review_constraints(db_engine, case):

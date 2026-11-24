@@ -5,6 +5,7 @@ const pages = {
 };
 const statuses = {
   matched: "Matched", needs_review: "Needs review", unmatched: "Unmatched",
+  already_matched: "Already matched",
   queued: "Queued", retrying: "Retrying", running: "Running",
   succeeded: "Succeeded", failed: "Failed",
 };
@@ -388,9 +389,8 @@ function reviewDialog(state, current, candidate, action) {
     <p>Candidate: ${esc(candidate.merchant)} · ${money(candidate)} · ${esc(candidate.date)}</p>
     <label>Reason<textarea name="reason" rows="3" maxlength="2000" required></textarea></label>
     ${confirming && mismatch ? '<label class="check"><input type="checkbox" name="ack" required>I acknowledge the amount difference.</label>' : ""}
-    <button class="${confirming ? "primary" : ""}" type="submit">${label}</button>${formError}
-    <button id="reload-case" type="button" hidden>Reload review case</button></form>`);
-  $("#reload-case").onclick = () => { closeDialog(); refresh(); };
+    <button class="${confirming ? "primary" : ""}" type="submit">${label}</button>${formError}</form>`);
+  const form = $("#dialog form");
   bindForm(async data => {
     const reason = data.get("reason").trim();
     if (!reason) throw new Error("Enter a reason for this decision.");
@@ -408,9 +408,14 @@ function reviewDialog(state, current, candidate, action) {
       await api(pathFor(state.account) + "/review-cases/" + encodeURIComponent(current.receipt_id) + "/" + action, {body});
     } catch (error) {
       if (["stale_revision", "state_conflict"].includes(error.code)) {
-        const reload = $("#reload-case");
-        if (reload) reload.hidden = false;
-        throw new Error("This case changed. Reload it and review the latest candidates before acting.");
+        reviewKeys.delete(key);
+        if (form.isConnected) {
+          const message = error.code === "stale_revision" ? "This review case changed since you opened it." : error.message;
+          dialog(label, `<p class="error" role="alert">${esc(message)} Reload the review case to see the latest candidates.</p>
+            <button id="reload-case" type="button" autofocus>Reload review case</button>`);
+          $("#reload-case").onclick = () => { closeDialog(); refresh(); };
+        }
+        return;
       }
       throw error;
     }
@@ -434,10 +439,12 @@ async function reviewView(state, signal) {
       <p class="muted">Revision ${esc(current.revision)} · ${receiptLink(current.receipt_id, "Receipt details", {...state, id: current.receipt_id})}</p>
     </section>
     ${current.candidates.map((candidate, index) => `<section class="panel stack">
-      <h3>${esc(candidate.merchant)} · ${money(candidate)}</h3>
+      <div class="toolbar"><h3>${esc(candidate.merchant)} · ${money(candidate)}</h3>
+        ${candidate.already_matched ? badge("already_matched") : ""}</div>
       ${compare(current.receipt, candidate, {...state, id: current.receipt_id})}
       ${candidate.competing_receipt_ids?.length ? "<p class='muted'>This transaction also fits another receipt.</p>" : ""}
-      <div class="row"><button class="primary" type="button" data-action="confirm" data-candidate="${index}">Confirm match</button>
+      <div class="row"><button class="primary" type="button" data-action="confirm" data-candidate="${index}"
+        ${candidate.already_matched ? "disabled" : ""}>Confirm match</button>
         <button type="button" data-action="reject" data-candidate="${index}">Reject candidate</button></div>
     </section>`).join("")}
     ${current.rejected_candidates.length ? `<section class="panel"><h2>Rejected candidates</h2>
@@ -450,7 +457,7 @@ async function reviewView(state, signal) {
       ${current ? `<div class="review"><section class="queue" aria-label="Review queue">${queue}${pager(state, items)}</section>${comparison}</div>`
         : empty("No review cases on this page.") + pager(state, items)}`,
     bind() {
-      document.querySelectorAll("[data-candidate]").forEach(button => {
+      document.querySelectorAll("[data-candidate]:enabled").forEach(button => {
         button.onclick = () => reviewDialog(state, current, current.candidates[Number(button.dataset.candidate)], button.dataset.action);
       });
     },

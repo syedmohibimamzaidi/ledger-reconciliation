@@ -61,6 +61,9 @@ def list_review_cases(engine: Engine, account_id: UUID) -> list[ReviewCase]:
     _validate_engine_account(engine, account_id)
     with engine.begin() as connection:
         _lock_account(connection, account_id)
+        matched_ids = {str(transaction_id) for transaction_id in connection.scalars(
+            select(ReconciliationDecision.bank_transaction_id).where(
+                ReconciliationDecision.account_id == account_id, ReconciliationDecision.status == "matched"))}
         rejections = {}
         for row in connection.execute(select(ReviewAction.__table__).where(
                 ReviewAction.account_id == account_id, ReviewAction.action == "reject").order_by(ReviewAction.created_at, ReviewAction.id)):
@@ -70,7 +73,10 @@ def list_review_cases(engine: Engine, account_id: UUID) -> list[ReviewCase]:
             })
         cases = [ReviewCase(
             account_id, row.receipt_id, row.revision, tuple(row.details["reasons"]),
-            row.details["receipt"], tuple(row.details["candidates"]), tuple(rejections.get(row.receipt_id, [])),
+            row.details["receipt"], tuple(
+                {**candidate, "already_matched": candidate["bank_transaction_id"] in matched_ids}
+                for candidate in row.details["candidates"]
+            ), tuple(rejections.get(row.receipt_id, [])),
         ) for row in connection.execute(select(ReconciliationDecision.__table__).where(
             ReconciliationDecision.account_id == account_id, ReconciliationDecision.status == "needs_review")
             .order_by(ReconciliationDecision.receipt_id))]

@@ -14,7 +14,7 @@ from ledger.api.app import create_app
 from ledger.jobs.service import claim_attempt, execute_job, fail_attempt, submit_job
 from ledger.persistence.bank_ingest import import_bank_transactions
 from ledger.persistence.ingest import StructuredReceipt, ingest_receipt
-from ledger.persistence.models import Account, AuditEvent, BankTransaction, ReconciliationDecision
+from ledger.persistence.models import Account, AuditEvent, BankTransaction, ReconciliationDecision, ReviewAction
 from ledger.persistence.reconcile import assign_receipts_to_account, reconcile_account, reconcile_account_in_transaction
 from test_api import client, post
 from test_jobs import queue
@@ -62,6 +62,39 @@ def summary(client, aid):
     response = client.get(f"/accounts/{aid}/summary")
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_review_availability_changes_across_cases_without_rewriting_snapshots(client, db_engine):
+    aid = account(client)
+    first, second = str(receipt(db_engine, aid)), str(receipt(db_engine, aid))
+    bank(db_engine, aid, "a,2026-10-22,Coffee,-12.30,CAD\nb,2026-10-22,Coffee,-12.30,CAD\n")
+    base = f"/accounts/{aid}"
+    queue_path = base + "/review-cases"
+    assert post(client, base + "/reconciliation")["needs_review"] == 2
+    cases = {item["receipt_id"]: item for item in client.get(queue_path).json()["items"]}
+    selected, available = [item["bank_transaction_id"] for item in cases[second]["candidates"]]
+    assert all(candidate["already_matched"] is False for case in cases.values() for candidate in case["candidates"])
+    outcomes_path = base + f"/outcomes?receipt_id={second}"
+    original_outcome = client.get(outcomes_path).json()["items"][0]
+    request = {"bank_transaction_id": selected, "request_id": str(uuid4()),
+               "expected_revision": cases[first]["revision"], "reason": "Checked statement"}
+    assert post(client, f"{queue_path}/{first}/confirm", request)["status"] == "matched"
+
+    [remaining] = client.get(queue_path).json()["items"]
+    assert remaining["receipt_id"] == second and remaining["revision"] == cases[second]["revision"]
+    assert {item["bank_transaction_id"]: item["already_matched"] for item in remaining["candidates"]} == {
+        selected: True, available: False}
+    stale = client.post(f"{queue_path}/{second}/confirm", json={**request, "request_id": str(uuid4()),
+                        "expected_revision": cases[second]["revision"]})
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "state_conflict"
+    assert "already accepted for another receipt" in stale.json()["error"]["message"]
+    assert client.get(outcomes_path).json()["items"] == [original_outcome]
+    reviews = [item for item in client.get(base + "/audit-events").json()["items"]
+               if item["event_type"] == "receipt.reviewed"]
+    assert [item["receipt_id"] for item in reviews] == [first]
+    with db_engine.connect() as connection:
+        assert connection.scalar(select(func.count()).select_from(ReviewAction)) == 1
 
 
 def test_summary_partitions_debits_credits_zero_and_receipt_states(client, db_engine):
